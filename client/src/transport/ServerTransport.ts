@@ -47,7 +47,7 @@ function serverMessage(body: unknown, fallback: string): string {
 export class ServerTransport implements Transport {
   private socket: WebSocket | null = null;
   private session: PersistedSession | null = null;
-  private manualDisconnect = false;
+  private intentionallyClosedSockets = new WeakSet<WebSocket>();
   private eventListeners = new Set<(event: ServerEvent) => void>();
   private statusListeners = new Set<(status: TransportStatus) => void>();
   private waiters = new Map<string, CommandWaiter>();
@@ -110,7 +110,6 @@ export class ServerTransport implements Transport {
 
   async connect(session: PersistedSession): Promise<void> {
     this.disconnect();
-    this.manualDisconnect = false;
     this.session = session;
     this.emitStatus("connecting");
 
@@ -126,6 +125,7 @@ export class ServerTransport implements Transport {
       const timer = window.setTimeout(() => {
         if (connected) return;
         socket.close();
+        this.emitStatus("error");
         reject(new TransportError("连接房间超时。", "CONNECTION_TIMEOUT"));
       }, 8_000);
 
@@ -150,7 +150,21 @@ export class ServerTransport implements Transport {
         try {
           const event = JSON.parse(String(message.data)) as ServerEvent;
           this.handleEvent(event);
-          if (!connected && event.type !== "session.rejected" && event.type !== "protocol.error") {
+          if (!connected && (event.type === "session.rejected" || event.type === "protocol.error")) {
+            const detail = event.payload.error as Record<string, unknown> | undefined;
+            window.clearTimeout(timer);
+            this.intentionallyClosedSockets.add(socket);
+            socket.close(1008, "session rejected");
+            this.emitStatus("error");
+            reject(
+              new TransportError(
+                typeof detail?.message === "string" ? detail.message : "房间会话已失效。",
+                typeof detail?.code === "string" ? detail.code : "SESSION_REJECTED",
+              ),
+            );
+            return;
+          }
+          if (!connected) {
             connected = true;
             window.clearTimeout(timer);
             this.emitStatus("connected");
@@ -174,10 +188,17 @@ export class ServerTransport implements Transport {
 
       socket.onclose = () => {
         window.clearTimeout(timer);
-        if (this.socket === socket) this.socket = null;
-        if (!this.manualDisconnect) this.emitStatus("disconnected");
+        const isCurrentSocket = this.socket === socket;
+        if (isCurrentSocket) this.socket = null;
+        // A delayed close from the previous socket must not overwrite the state
+        // of a newly established connection.
+        if (isCurrentSocket && !this.intentionallyClosedSockets.has(socket)) {
+          this.emitStatus("disconnected");
+        }
         if (!connected) reject(new TransportError("房间连接已关闭。", "CONNECTION_CLOSED"));
-        this.rejectWaiters(new TransportError("连接中断，操作没有完成。", "CONNECTION_CLOSED"));
+        if (isCurrentSocket) {
+          this.rejectWaiters(new TransportError("连接中断，操作没有完成。", "CONNECTION_CLOSED"));
+        }
       };
     });
   }
@@ -220,8 +241,8 @@ export class ServerTransport implements Transport {
   }
 
   disconnect(): void {
-    this.manualDisconnect = true;
     if (this.socket) {
+      this.intentionallyClosedSockets.add(this.socket);
       this.socket.close(1000, "client disconnect");
       this.socket = null;
     }

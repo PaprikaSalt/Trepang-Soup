@@ -1,5 +1,6 @@
 import { argon2id } from "hash-wasm";
 
+import { SERVER_URL } from "../config/server";
 import { PROTOCOL_VERSION } from "../protocol/types";
 
 export interface LibraryPuzzle {
@@ -211,8 +212,6 @@ export class AdminTransport {
     }
   }
 }
-
-const SERVER_URL = (import.meta.env.VITE_SERVER_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
 
 // 单例让令牌在应用运行期间跨页面复用，但关闭程序后不会留下管理员凭据。
 export const adminTransport = new AdminTransport(SERVER_URL);

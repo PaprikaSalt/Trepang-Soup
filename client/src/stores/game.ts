@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
+import { SERVER_URL } from "../config/server";
 import { clearSession, getClientInstanceId, loadSession, saveSession } from "../persistence/session";
 import type {
   EventType,
@@ -31,9 +32,10 @@ import type {
 
 const PROFILE_KEY = "trepang-soup.profile";
 const HISTORY_KEY = "trepang-soup.history";
-const SERVER_URL = (import.meta.env.VITE_SERVER_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
 const TRANSPORT_MODE = import.meta.env.VITE_TRANSPORT_MODE === "mock" ? "mock" : "server";
-const sleep = (duration: number) => new Promise((resolve) => window.setTimeout(resolve, duration));
+const RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000] as const;
+const sleep = (duration: number) =>
+  new Promise<void>((resolve) => window.setTimeout(resolve, duration));
 
 const MOCK_PUZZLE: Puzzle = {
   id: "mock-dorm-light",
@@ -213,10 +215,24 @@ export const useGameStore = defineStore("game", () => {
   const lastEventId = ref(0);
   let roomRevision = 0;
   let activeSession: PersistedSession | null = null;
+  let autoReconnectEnabled = false;
+  let reconnectGeneration = 0;
+  let reconnectPromise: Promise<void> | null = null;
 
   const transport = new ServerTransport(SERVER_URL);
   transport.onStatus((status) => {
+    if (
+      status === "disconnected" &&
+      autoReconnectEnabled &&
+      activeSession &&
+      stage.value !== "closed"
+    ) {
+      connectionStatus.value = "reconnecting";
+      void reconnectRoom();
+      return;
+    }
     connectionStatus.value = status;
+    if (status === "connected") autoReconnectEnabled = true;
   });
   transport.onEvent(applyServerEvent);
 
@@ -234,6 +250,7 @@ export const useGameStore = defineStore("game", () => {
       checking: "正在检查后端服务",
       available: "真实后端服务可用",
       connecting: "正在连接多人房间",
+      reconnecting: "连接中断，正在自动恢复房间",
       connected: "真实多人服务已连接",
       disconnected: "与房间的连接已断开",
       error: "后端服务暂时不可用",
@@ -253,6 +270,95 @@ export const useGameStore = defineStore("game", () => {
     if (!activeSession) return;
     activeSession = { ...activeSession, lastEventId: lastEventId.value };
     saveSession(activeSession);
+  }
+
+  function isTerminalSessionError(error: unknown): boolean {
+    if (!(error instanceof TransportError)) return false;
+    return ["HTTP_401", "HTTP_404", "HTTP_410", "SESSION_INVALID", "ROOM_NOT_FOUND"].includes(
+      error.code,
+    );
+  }
+
+  function cancelReconnect(): void {
+    reconnectGeneration += 1;
+    reconnectPromise = null;
+    autoReconnectEnabled = false;
+  }
+
+  async function reconnectRoom(): Promise<void> {
+    if (TRANSPORT_MODE !== "server" || !activeSession || stage.value === "closed") return;
+    if (reconnectPromise) return reconnectPromise;
+
+    const generation = reconnectGeneration;
+    reconnectPromise = (async () => {
+      for (let attempt = 0; attempt < RECONNECT_DELAYS.length; attempt += 1) {
+        connectionStatus.value = "reconnecting";
+        const delay = RECONNECT_DELAYS[attempt];
+        lastError.value =
+          attempt === 0
+            ? "连接意外中断，正在恢复房间状态……"
+            : `自动重连尚未成功，${delay / 1_000} 秒后再次尝试。`;
+        await sleep(delay);
+
+        if (generation !== reconnectGeneration || !activeSession || stage.value === "closed") {
+          return;
+        }
+
+        try {
+          const previousSession: PersistedSession = activeSession;
+          const resumed = await transport.resumeSession(previousSession);
+          if (generation !== reconnectGeneration) return;
+
+          // Resume rotates the token. Persist it before opening WebSocket so a
+          // failed socket handshake can still be retried with the newest token.
+          activeSession = {
+            roomId: resumed.roomId,
+            inviteCode: previousSession.inviteCode,
+            playerId: resumed.playerId,
+            sessionToken: resumed.sessionToken,
+            expiresAt: resumed.expiresAt,
+            lastEventId: 0,
+          };
+          saveSession(activeSession);
+          roomId.value = activeSession.roomId;
+          roomCode.value = activeSession.inviteCode;
+          selfId.value = activeSession.playerId;
+          await transport.connect(activeSession);
+          if (generation !== reconnectGeneration) {
+            transport.disconnect();
+            return;
+          }
+          lastError.value = "";
+          return;
+        } catch (error) {
+          if (generation !== reconnectGeneration) return;
+          if (isTerminalSessionError(error)) {
+            clearSession();
+            activeSession = null;
+            autoReconnectEnabled = false;
+            connectionStatus.value = "error";
+            lastError.value = "房间会话已失效，请返回首页后重新加入。";
+            return;
+          }
+        }
+      }
+
+      connectionStatus.value = "error";
+      lastError.value = "网络仍然不可用。房间记录已保留，重新进入页面即可再次恢复。";
+    })().finally(() => {
+      if (generation === reconnectGeneration) reconnectPromise = null;
+    });
+
+    return reconnectPromise;
+  }
+
+  function recoverFromEventGap(): void {
+    if (!activeSession || reconnectPromise) return;
+    lastError.value = "检测到房间消息缺口，正在重新同步完整状态……";
+    connectionStatus.value = "reconnecting";
+    // A fresh snapshot is safer than applying later events on incomplete state.
+    transport.disconnect();
+    void reconnectRoom();
   }
 
   function resetRoom(): void {
@@ -332,6 +438,7 @@ export const useGameStore = defineStore("game", () => {
       return roomCode.value;
     }
 
+    cancelReconnect();
     transport.disconnect();
     try {
       const admission = await transport.createRoom({
@@ -367,6 +474,7 @@ export const useGameStore = defineStore("game", () => {
       return roomCode.value;
     }
 
+    cancelReconnect();
     transport.disconnect();
     try {
       const admission = await transport.joinRoom({
@@ -393,9 +501,14 @@ export const useGameStore = defineStore("game", () => {
       return;
     }
     if (roomId.value && connectionStatus.value === "connected") return;
+    if (reconnectPromise) {
+      await reconnectPromise;
+      if (connectionStatus.value === "connected") return;
+    }
 
     const stored = loadSession();
     if (!stored) throw new TransportError("没有可恢复的房间，请重新加入。", "NO_SESSION");
+    cancelReconnect();
     try {
       const resumed = await transport.resumeSession(stored);
       activeSession = {
@@ -413,7 +526,10 @@ export const useGameStore = defineStore("game", () => {
       selfId.value = activeSession.playerId;
       await transport.connect(activeSession);
     } catch (error) {
-      clearSession();
+      if (isTerminalSessionError(error)) {
+        clearSession();
+        activeSession = null;
+      }
       lastError.value = errorMessage(error);
       throw error;
     }
@@ -669,8 +785,7 @@ export const useGameStore = defineStore("game", () => {
 
     if (event.eventId <= lastEventId.value) return;
     if (lastEventId.value > 0 && event.eventId > lastEventId.value + 1) {
-      lastError.value = "房间事件出现缺口，请返回首页后重新进入房间。";
-      connectionStatus.value = "error";
+      recoverFromEventGap();
       return;
     }
     lastEventId.value = event.eventId;
@@ -685,6 +800,7 @@ export const useGameStore = defineStore("game", () => {
       stage.value = "closed";
       clearSession();
       activeSession = null;
+      cancelReconnect();
       transport.disconnect();
     } else if (event.type === "room.host_changed") {
       const hostPlayerId = String(event.payload.hostPlayerId || "");
