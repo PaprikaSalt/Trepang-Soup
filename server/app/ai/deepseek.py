@@ -45,6 +45,10 @@ class AIServiceError(RuntimeError):
         self.retryable = retryable
 
 
+class AIOutputError(AIServiceError):
+    """A model response remained invalid after the one allowed repair request."""
+
+
 class DeepSeekService:
     """DeepSeek JSON-mode adapter for puzzle generation and live hosting."""
 
@@ -83,52 +87,67 @@ class DeepSeekService:
     ) -> RuntimePuzzle:
         last_issues: list[str] = []
         for generation_attempt in range(1, self.settings.deepseek_generation_attempts + 1):
-            candidate = await self._json_completion(
-                PuzzleGeneration,
-                system=(
-                    "你是海龟汤原创题目设计师。输出必须是 JSON 对象。题目必须能够通过是非问题"
-                    "逐步还原，不依赖冷门专业知识、纯谐音、超自然万能解释或未给出的任意设定。"
-                ),
-                user=json.dumps(
-                    {
-                        "task": "generate_lateral_thinking_puzzle",
-                        "difficulty": difficulty,
-                        "style": style,
-                        "previousReviewIssues": last_issues,
-                        "requiredJson": {
-                            "title": "内部展示标题",
-                            "surface": "玩家可见汤面",
-                            "truth": "完整且自洽的汤底",
-                            "keyFacts": ["必须推出的事实，至少两项"],
-                            "assumptions": [],
-                            "contentWarnings": [],
-                            "difficultyRationale": "难度理由",
+            try:
+                candidate = await self._json_completion(
+                    PuzzleGeneration,
+                    system=(
+                        "你是海龟汤原创题目设计师。输出必须是 JSON 对象。题目必须能够通过"
+                        "是非问题逐步还原，不依赖冷门专业知识、纯谐音、超自然万能解释或"
+                        "未给出的任意设定。"
+                    ),
+                    user=json.dumps(
+                        {
+                            "task": "generate_lateral_thinking_puzzle",
+                            "difficulty": difficulty,
+                            "style": style,
+                            "previousReviewIssues": last_issues,
+                            "requiredJson": {
+                                "title": "内部展示标题",
+                                "surface": "玩家可见汤面",
+                                "truth": "完整且自洽的汤底",
+                                "keyFacts": ["必须推出的事实，至少两项"],
+                                "assumptions": [],
+                                "contentWarnings": [],
+                                "difficultyRationale": "难度理由",
+                            },
                         },
+                        ensure_ascii=False,
+                    ),
+                    max_tokens=1_800,
+                    operation="puzzle.generate",
+                )
+                review = await self._json_completion(
+                    PuzzleQualityReview,
+                    system=(
+                        "你是独立的海龟汤质量审查员。输出必须是 JSON 对象。严格检查矛盾、"
+                        "动机、可推理性、知识门槛、风格边界、多解和关键事实覆盖。"
+                        "任何实质问题都应拒绝。"
+                    ),
+                    user=json.dumps(
+                        {
+                            "task": "review_puzzle",
+                            "difficulty": difficulty,
+                            "style": style,
+                            "candidate": candidate.model_dump(by_alias=True),
+                            "requiredJson": {"passed": True, "issues": []},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    max_tokens=700,
+                    operation="puzzle.review",
+                )
+            except AIOutputError:
+                last_issues = ["上一轮结构化输出在格式修复后仍不符合 requiredJson"]
+                logger.warning(
+                    "puzzle generation output invalid",
+                    extra={
+                        "component": "ai",
+                        "operation": "puzzle.generate",
+                        "ai_attempt": generation_attempt,
+                        "error_code": "AI_OUTPUT_VALIDATION_FAILED",
                     },
-                    ensure_ascii=False,
-                ),
-                max_tokens=1_800,
-                operation="puzzle.generate",
-            )
-            review = await self._json_completion(
-                PuzzleQualityReview,
-                system=(
-                    "你是独立的海龟汤质量审查员。输出必须是 JSON 对象。严格检查矛盾、动机、"
-                    "可推理性、知识门槛、风格边界、多解和关键事实覆盖。任何实质问题都应拒绝。"
-                ),
-                user=json.dumps(
-                    {
-                        "task": "review_puzzle",
-                        "difficulty": difficulty,
-                        "style": style,
-                        "candidate": candidate.model_dump(by_alias=True),
-                        "requiredJson": {"passed": True, "issues": []},
-                    },
-                    ensure_ascii=False,
-                ),
-                max_tokens=700,
-                operation="puzzle.review",
-            )
+                )
+                continue
             if review.passed:
                 return candidate.to_runtime()
             last_issues = review.issues or ["质量审查未通过，但没有返回具体原因"]
@@ -140,7 +159,7 @@ class DeepSeekService:
                     "error_code": "PUZZLE_QUALITY_REJECTED",
                 },
             )
-        raise AIServiceError("DeepSeek 连续生成的题目均未通过质量审查。")
+        raise AIServiceError("DeepSeek 连续生成的题目均未通过结构或质量校验。")
 
     async def answer_question(
         self,
@@ -179,7 +198,7 @@ class DeepSeekService:
         )
         self._ensure_no_truth_leak(puzzle, output.answer)
         if output.confirmed_fact is not None and output.confirmed_fact not in puzzle.key_facts:
-            raise AIServiceError("DeepSeek 返回了不属于题目的 confirmedFact。", retryable=False)
+            raise AIOutputError("DeepSeek 返回了不属于题目的 confirmedFact。", retryable=False)
         return output.to_domain()
 
     async def create_hint(
@@ -250,14 +269,14 @@ class DeepSeekService:
         matched = set(output.matched_facts)
         missing = set(output.missing_facts)
         if not matched <= known or not missing <= known or matched & missing:
-            raise AIServiceError("DeepSeek 返回了无效的关键事实引用。", retryable=False)
+            raise AIOutputError("DeepSeek 返回了无效的关键事实引用。", retryable=False)
         expected_missing = known - matched
         if missing != expected_missing:
-            raise AIServiceError("DeepSeek 返回的关键事实覆盖关系不一致。", retryable=False)
+            raise AIOutputError("DeepSeek 返回的关键事实覆盖关系不一致。", retryable=False)
         if output.result == "correct" and expected_missing:
-            raise AIServiceError("DeepSeek 在关键事实未覆盖时错误判定为正确。", retryable=False)
+            raise AIOutputError("DeepSeek 在关键事实未覆盖时错误判定为正确。", retryable=False)
         if output.result != "correct" and not expected_missing:
-            raise AIServiceError("DeepSeek 在关键事实全部覆盖时拒绝了正确答案。", retryable=False)
+            raise AIOutputError("DeepSeek 在关键事实全部覆盖时拒绝了正确答案。", retryable=False)
         self._ensure_no_truth_leak(puzzle, output.feedback)
         return output.to_domain()
 
@@ -281,7 +300,16 @@ class DeepSeekService:
         )
         try:
             return model.model_validate_json(content)
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
+            logger.warning(
+                "DeepSeek output failed validation",
+                extra={
+                    "component": "ai",
+                    "operation": operation,
+                    "error_code": "AI_OUTPUT_VALIDATION_FAILED",
+                    "validation_error_count": self._validation_error_count(exc),
+                },
+            )
             repaired = await self._request_with_retry(
                 messages=[
                     *messages,
@@ -300,7 +328,16 @@ class DeepSeekService:
             try:
                 return model.model_validate_json(repaired)
             except (ValidationError, ValueError) as exc:
-                raise AIServiceError("DeepSeek 结构化输出连续校验失败。") from exc
+                logger.warning(
+                    "DeepSeek repaired output failed validation",
+                    extra={
+                        "component": "ai",
+                        "operation": f"{operation}.repair",
+                        "error_code": "AI_OUTPUT_REPAIR_FAILED",
+                        "validation_error_count": self._validation_error_count(exc),
+                    },
+                )
+                raise AIOutputError("DeepSeek 结构化输出连续校验失败。") from exc
 
     async def _request_with_retry(
         self,
@@ -410,4 +447,8 @@ class DeepSeekService:
         normalized_truth = "".join(puzzle.truth.split())
         normalized_public = "".join(public_text.split())
         if normalized_truth and normalized_truth in normalized_public:
-            raise AIServiceError("DeepSeek 输出包含完整汤底。", retryable=False)
+            raise AIOutputError("DeepSeek 输出包含完整汤底。", retryable=False)
+
+    @staticmethod
+    def _validation_error_count(error: ValidationError | ValueError) -> int:
+        return error.error_count() if isinstance(error, ValidationError) else 1

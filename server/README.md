@@ -127,9 +127,9 @@ python tools/admin_credentials.py respond --challenge-file challenge.json
 - 房主关闭、结算事件发送宽限结束、或全员离线超过 `ROOM_IDLE_SECONDS` 后，房间、邀请
   码、会话、事件缓存和后台任务一并清除。
 
-## 当前仍需部署侧完成
+## 部署侧后续工作
 
-- 提供真实 `DEEPSEEK_API_KEY` 并运行实网验收。
+- 通过部署环境的密钥管理注入 `DEEPSEEK_API_KEY`，不得复用或提交开发验收凭据。
 - 配置 HTTPS 反向代理、systemd、日志采集和密钥管理。
 - Windows 客户端管理员题库页面尚未接入服务端接口。
 - 客户端运行中断线后的自动退避重连仍待实现。

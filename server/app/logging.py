@@ -5,6 +5,7 @@ from typing import Any
 
 SAFE_CONTEXT_FIELDS = (
     "component",
+    "operation",
     "request_id",
     "room_id_hash",
     "player_id_hash",
@@ -13,6 +14,7 @@ SAFE_CONTEXT_FIELDS = (
     "ai_latency_ms",
     "ai_attempt",
     "error_code",
+    "validation_error_count",
 )
 
 

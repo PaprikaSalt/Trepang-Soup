@@ -216,6 +216,49 @@ async def test_generation_rejects_bad_review_then_generates_again() -> None:
     await client.aclose()
 
 
+async def test_generation_continues_after_original_and_repair_are_invalid() -> None:
+    valid_candidate = {
+        "title": "修复后重新生成",
+        "surface": "这是一个长度足够并且能通过质量审查的海龟汤汤面，需要玩家继续提问。",
+        "truth": (
+            "这是一个长度绝对足够并且逻辑自洽的完整汤底，人物行为动机、时间顺序和"
+            "关键因果关系都能够成立。"
+        ),
+        "keyFacts": ["事实甲", "事实乙"],
+        "assumptions": [],
+        "contentWarnings": [],
+        "difficultyRationale": "适合标准难度。",
+    }
+    responses = [
+        completion("not-json"),
+        completion("still-not-json"),
+        completion(valid_candidate),
+        completion({"passed": True, "issues": []}),
+    ]
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return responses.pop(0)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.deepseek.com",
+    )
+    service = DeepSeekService(settings(), client=client)
+
+    generated = await service.generate_puzzle(
+        Difficulty.STANDARD,
+        PuzzleStyle.CLASSIC_MYSTERY,
+    )
+
+    assert generated.title == "修复后重新生成"
+    assert len(requests) == 4
+    second_generation = json.loads(requests[2].content)
+    assert "结构化输出" in second_generation["messages"][1]["content"]
+    await client.aclose()
+
+
 async def test_conclusion_rejects_inconsistent_key_fact_coverage() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return completion(

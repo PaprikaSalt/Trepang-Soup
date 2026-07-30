@@ -3,10 +3,16 @@
 import argparse
 import asyncio
 import json
+import sys
+from pathlib import Path
 
-from app.ai.deepseek import DeepSeekService
-from app.config import Settings
-from app.domain.models import Difficulty, PuzzleStyle
+SERVER_ROOT = Path(__file__).resolve().parents[1]
+if str(SERVER_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVER_ROOT))
+
+from app.ai.deepseek import DeepSeekService  # noqa: E402
+from app.config import Settings  # noqa: E402
+from app.domain.models import Difficulty, PuzzleStyle  # noqa: E402
 
 
 async def run(difficulty: Difficulty, style: PuzzleStyle) -> None:
