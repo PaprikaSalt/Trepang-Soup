@@ -1,0 +1,14 @@
+**/.artifacts/
+release/
+*.exe
+*.msi
+*.log
+client/node_modules/
+client/dist/
+client/src-tauri/target/
+client/.vite/
+server/.venv/
+**/.env
+!**/.env.example
+__pycache__/
+*.pyc
