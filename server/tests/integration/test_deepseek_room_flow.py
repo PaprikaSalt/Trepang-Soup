@@ -71,10 +71,6 @@ async def test_mocked_deepseek_drives_room_from_generation_to_settlement() -> No
         completion(
             {
                 "answerType": "yes",
-                "answer": "是。灯光是有人主动发出的。",
-                "confirmedFact": "门缝灯光是求救信号",
-                "newFactStrength": "small",
-                "safetyFlags": [],
             }
         ),
         completion({"content": "想想她为什么必须让屋内的人相信自己无法进门。"}),
@@ -83,8 +79,6 @@ async def test_mocked_deepseek_drives_room_from_generation_to_settlement() -> No
                 "result": "correct",
                 "matchedFacts": key_facts,
                 "missingFacts": [],
-                "feedback": "",
-                "confidence": 0.98,
             }
         ),
     ]

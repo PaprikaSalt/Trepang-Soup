@@ -704,7 +704,6 @@ class Room:
                         EventType.CONCLUSION_CLOSE,
                         {
                             "feedback": result.feedback,
-                            "missingFacts": list(result.missing_facts),
                         },
                         command_id,
                     )

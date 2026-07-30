@@ -34,6 +34,9 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 
 Key 不得进入客户端、日志或 Git。DeepSeek 当前 JSON 模式需要提示词明确要求 JSON；
 适配器同时使用 `response_format={"type":"json_object"}`，并再次使用 Pydantic 校验。
+正式问答只让模型返回 `answerType`，玩家可见的“是/否/不相关/部分正确”由服务端生成固定
+文案；单题判断不携带此前问答历史，避免多人连续追问诱导模型复盘或主动补充秘密。公共提示
+还会拒绝逐字包含完整汤底或关键事实的模型输出，接近正确的结论也不会下发缺失事实原文。
 接口行为以 DeepSeek 官方的 [Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion)、
 [JSON Output](https://api-docs.deepseek.com/guides/json_mode/) 和
 [错误码](https://api-docs.deepseek.com/quick_start/error_codes/) 文档为准。

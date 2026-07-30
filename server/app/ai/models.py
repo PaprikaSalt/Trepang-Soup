@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
-from app.domain.models import AnswerType, ConclusionResult, HostAnswer, RuntimePuzzle
+from app.domain.models import AnswerType, RuntimePuzzle
 from app.security.sessions import generate_id
 
 
@@ -64,29 +64,6 @@ class PuzzleQualityReview(AIModel):
 
 class HostAnswerOutput(AIModel):
     answer_type: AnswerType = Field(alias="answerType")
-    answer: str = Field(min_length=1, max_length=120)
-    confirmed_fact: str | None = Field(default=None, alias="confirmedFact", max_length=200)
-    new_fact_strength: Literal["none", "small"] = Field(alias="newFactStrength")
-    safety_flags: list[str] = Field(default_factory=list, alias="safetyFlags", max_length=8)
-
-    @field_validator("answer")
-    @classmethod
-    def strip_answer(cls, value: str) -> str:
-        return value.strip()
-
-    @field_validator("confirmed_fact")
-    @classmethod
-    def normalize_confirmed_fact(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value.strip() or None
-
-    def to_domain(self) -> HostAnswer:
-        return HostAnswer(
-            answer_type=self.answer_type,
-            answer=self.answer,
-            confirmed_fact=self.confirmed_fact,
-        )
 
 
 class HintOutput(AIModel):
@@ -97,12 +74,3 @@ class ConclusionOutput(AIModel):
     result: Literal["correct", "close", "wrong"]
     matched_facts: list[str] = Field(default_factory=list, alias="matchedFacts")
     missing_facts: list[str] = Field(default_factory=list, alias="missingFacts")
-    feedback: str = Field(default="", max_length=300)
-    confidence: float = Field(ge=0, le=1)
-
-    def to_domain(self) -> ConclusionResult:
-        return ConclusionResult(
-            result=self.result,
-            feedback=self.feedback,
-            missing_facts=tuple(self.missing_facts),
-        )
