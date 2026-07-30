@@ -6,6 +6,8 @@ import BaseModal from "./BaseModal.vue";
 const props = defineProps<{
   open: boolean;
   nickname: string;
+  loading?: boolean;
+  error?: string;
 }>();
 
 const emit = defineEmits<{
@@ -22,7 +24,7 @@ function normalizeCode(): void {
 }
 
 function submit(): void {
-  if (!canSubmit.value) return;
+  if (!canSubmit.value || props.loading) return;
   emit("join", localNickname.value.trim(), code.value);
 }
 </script>
@@ -51,9 +53,11 @@ function submit(): void {
           @input="normalizeCode"
         />
       </label>
-      <p class="field-help">演示阶段输入任意 6 位字母或数字都可以进入模拟房间。</p>
-      <button class="primary-button primary-button--full" type="submit" :disabled="!canSubmit">
-        推门进去
+      <p class="field-help">请输入朋友发来的 6 位房间邀请码。</p>
+      <p v-if="props.error" class="form-error">{{ props.error }}</p>
+      <button class="primary-button primary-button--full" type="submit" :disabled="!canSubmit || props.loading">
+        <span v-if="props.loading" class="button-spinner"></span>
+        {{ props.loading ? "正在加入房间……" : "推门进去" }}
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M5 12h14M14 7l5 5-5 5" />
         </svg>

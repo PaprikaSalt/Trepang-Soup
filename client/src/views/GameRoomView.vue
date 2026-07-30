@@ -24,9 +24,13 @@ const feed = ref<HTMLElement | null>(null);
 const answeredCount = computed(() => game.questions.filter((question) => question.status === "answered").length);
 const clueProgress = computed(() => Math.min(86, 18 + answeredCount.value * 13 + game.hintCount * 8));
 
-onMounted(() => {
-  game.ensureDemoRoom();
-  if (game.stage === "lobby") game.startGame();
+onMounted(async () => {
+  try {
+    await game.ensureRoom();
+    if (game.stage === "lobby") await router.push(`/lobby/${game.roomCode}`);
+  } catch {
+    await router.push("/");
+  }
 });
 
 watch(
@@ -34,6 +38,14 @@ watch(
   async () => {
     await nextTick();
     feed.value?.scrollTo({ top: feed.value.scrollHeight, behavior: "smooth" });
+  },
+);
+
+watch(
+  () => game.stage,
+  (value) => {
+    if (value === "settlement") void router.push(`/settlement/${game.roomCode}`);
+    if (value === "closed") void router.push("/");
   },
 );
 
@@ -55,47 +67,75 @@ function answerLabel(question: Question): string {
   return question.answerType ? labels[question.answerType] : "回答";
 }
 
-function sendDiscussion(): void {
-  game.sendDiscussion(discussionDraft.value);
-  discussionDraft.value = "";
+async function sendDiscussion(): Promise<void> {
+  const content = discussionDraft.value;
+  try {
+    await game.sendDiscussion(content);
+    discussionDraft.value = "";
+  } catch {
+    // The store exposes a reader-facing error while preserving the unsent draft.
+  }
 }
 
-function submitQuestion(): void {
-  game.submitQuestion(questionDraft.value);
-  questionDraft.value = "";
+async function submitQuestion(): Promise<void> {
+  const content = questionDraft.value;
+  try {
+    await game.submitQuestion(content);
+    questionDraft.value = "";
+  } catch {
+    // Keep the draft so a transient connection failure does not discard the question.
+  }
 }
 
 async function askForHint(): Promise<void> {
   if (hintLoading.value) return;
   hintLoading.value = true;
-  await game.requestHint();
-  hintLoading.value = false;
+  try {
+    await game.requestHint();
+  } finally {
+    hintLoading.value = false;
+  }
 }
 
 async function submitConclusion(): Promise<void> {
   if (!conclusionDraft.value.trim() || conclusionLoading.value) return;
   conclusionLoading.value = true;
   conclusionFeedback.value = "";
-  const result = await game.submitConclusion(conclusionDraft.value);
-  conclusionLoading.value = false;
-  if (result === "correct") {
-    conclusionOpen.value = false;
-    void router.push(`/settlement/${game.roomCode}`);
-  } else {
-    conclusionFeedback.value = "已经很接近了：你们解释了危险，却还没有说明门缝里的光如何让林夏确定室友在求救。";
+  try {
+    const result = await game.submitConclusion(conclusionDraft.value);
+    if (result === "correct") {
+      conclusionOpen.value = false;
+    } else if (result === "close") {
+      const latestFeedback = [...game.timeline]
+        .reverse()
+        .find((item) => item.title === "结案反馈")?.content;
+      conclusionFeedback.value =
+        latestFeedback || "已经很接近了，请继续补全关键行为之间的因果关系。";
+    } else {
+      conclusionFeedback.value = game.lastError || "主持人暂时无法判断，请稍后重试。";
+    }
+  } finally {
+    conclusionLoading.value = false;
   }
 }
 
-function giveUp(): void {
-  game.finishGame(true);
-  giveUpOpen.value = false;
-  void router.push(`/settlement/${game.roomCode}`);
+async function giveUp(): Promise<void> {
+  try {
+    await game.giveUp();
+    giveUpOpen.value = false;
+    conclusionOpen.value = false;
+  } catch {
+    // The confirmation remains open when the server does not accept the command.
+  }
 }
 
-function closeRoom(): void {
-  game.closeRoom();
-  closeRoomOpen.value = false;
-  void router.push("/");
+async function closeRoom(): Promise<void> {
+  try {
+    await game.closeRoom();
+    closeRoomOpen.value = false;
+  } catch {
+    // The room remains visible so the host can retry after a connection error.
+  }
 }
 
 function timelineKey(item: TimelineItem): string {
@@ -171,7 +211,7 @@ function timelineKey(item: TimelineItem): string {
               <small>正在认真听你们胡说八道</small>
             </div>
           </div>
-          <span class="connection-state"><i></i>模拟服务已连接</span>
+          <span class="connection-state"><i></i>{{ game.connectionLabel }}</span>
         </header>
 
         <div ref="feed" class="timeline-feed">
@@ -227,6 +267,8 @@ function timelineKey(item: TimelineItem): string {
             <span class="thinking-dots"><i></i><i></i><i></i></span>
           </div>
         </div>
+
+        <p v-if="game.lastError" class="game-error">{{ game.lastError }}</p>
 
         <form class="question-composer" @submit.prevent="submitQuestion">
           <div class="composer-label">

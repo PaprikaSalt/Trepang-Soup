@@ -10,9 +10,16 @@ const game = useGameStore();
 
 const settlement = computed(() => game.settlement);
 
-onMounted(() => {
-  game.ensureDemoRoom();
-  if (!game.settlement) game.finishGame(false);
+onMounted(async () => {
+  try {
+    await game.ensureRoom();
+    // 结算只能由服务端事件或恢复快照进入，避免客户端自行伪造本局结果。
+    if (game.stage === "lobby") await router.replace(`/lobby/${game.roomCode}`);
+    else if (game.stage === "playing") await router.replace(`/room/${game.roomCode}`);
+    else if (game.stage === "closed") await router.replace("/");
+  } catch {
+    await router.replace("/");
+  }
 });
 
 function returnHome(): void {

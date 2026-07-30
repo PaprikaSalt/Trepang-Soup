@@ -673,6 +673,15 @@ svg {
   box-shadow: 0 0 10px rgba(120, 170, 139, 0.65);
 }
 
+.home-status--error {
+  color: #d9a39b;
+}
+
+.home-status--error i {
+  background: #d98378;
+  box-shadow: 0 0 10px rgba(217, 131, 120, 0.58);
+}
+
 .home-main {
   display: flex;
   flex: 1;
@@ -2164,6 +2173,16 @@ svg {
   padding: 14px 22px 18px;
   border-top: 1px solid var(--line);
   background: rgba(12, 22, 29, 0.54);
+}
+
+.game-error {
+  margin: 0;
+  padding: 8px 22px;
+  border-top: 1px solid rgba(217, 131, 120, 0.16);
+  background: rgba(111, 47, 42, 0.18);
+  color: #e5aaa1;
+  font-size: 8px;
+  line-height: 1.45;
 }
 
 .composer-label {

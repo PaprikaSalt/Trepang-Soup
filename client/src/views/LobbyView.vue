@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import AppHeader from "../components/AppHeader.vue";
@@ -17,7 +17,21 @@ const sourceLabel = computed(() =>
     : "私人题库 · 随机抽取",
 );
 
-onMounted(() => game.ensureDemoRoom());
+onMounted(async () => {
+  try {
+    await game.ensureRoom();
+  } catch {
+    await router.push("/");
+  }
+});
+
+watch(
+  () => game.stage,
+  (value) => {
+    if (value === "playing") void router.push(`/room/${game.roomCode}`);
+    if (value === "closed") void router.push("/");
+  },
+);
 
 async function copyCode(): Promise<void> {
   try {
@@ -29,12 +43,14 @@ async function copyCode(): Promise<void> {
   window.setTimeout(() => (copied.value = false), 1400);
 }
 
-function startGame(): void {
+async function startGame(): Promise<void> {
+  if (starting.value) return;
   starting.value = true;
-  window.setTimeout(() => {
-    game.startGame();
-    void router.push(`/room/${game.roomCode}`);
-  }, 1100);
+  try {
+    await game.startGame();
+  } finally {
+    starting.value = false;
+  }
 }
 </script>
 
@@ -104,6 +120,8 @@ function startGame(): void {
           <span class="pulse-dot"></span>
           <p>游戏开始后仍可中途加入，新朋友会自动看到完整问答。</p>
         </div>
+
+        <p v-if="game.lastError" class="form-error">{{ game.lastError }}</p>
 
         <button
           v-if="game.isHost"

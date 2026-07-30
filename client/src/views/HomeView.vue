@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import AppHeader from "../components/AppHeader.vue";
@@ -12,20 +12,55 @@ const router = useRouter();
 const game = useGameStore();
 const createOpen = ref(false);
 const joinOpen = ref(false);
+const creating = ref(false);
+const joining = ref(false);
+const admissionError = ref("");
 const historyLabel = computed(() =>
   game.history.length ? `本地保存了 ${game.history.length} 局` : "还没有本地记录",
 );
 
-function createRoom(nickname: string, config: RoomConfig): void {
-  const code = game.createRoom(nickname, config);
-  createOpen.value = false;
-  void router.push(`/lobby/${code}`);
+onMounted(() => {
+  void game.checkServer();
+});
+
+async function createRoom(nickname: string, config: RoomConfig): Promise<void> {
+  if (creating.value) return;
+  creating.value = true;
+  admissionError.value = "";
+  try {
+    const code = await game.createRoom(nickname, config);
+    createOpen.value = false;
+    await router.push(`/lobby/${code}`);
+  } catch (error) {
+    admissionError.value = error instanceof Error ? error.message : "创建房间失败。";
+  } finally {
+    creating.value = false;
+  }
 }
 
-function joinRoom(nickname: string, code: string): void {
-  const normalized = game.joinRoom(nickname, code);
-  joinOpen.value = false;
-  void router.push(`/lobby/${normalized}`);
+async function joinRoom(nickname: string, code: string): Promise<void> {
+  if (joining.value) return;
+  joining.value = true;
+  admissionError.value = "";
+  try {
+    const normalized = await game.joinRoom(nickname, code);
+    joinOpen.value = false;
+    await router.push(`/lobby/${normalized}`);
+  } catch (error) {
+    admissionError.value = error instanceof Error ? error.message : "加入房间失败。";
+  } finally {
+    joining.value = false;
+  }
+}
+
+function openCreateDialog(): void {
+  admissionError.value = "";
+  createOpen.value = true;
+}
+
+function openJoinDialog(): void {
+  admissionError.value = "";
+  joinOpen.value = true;
 }
 </script>
 
@@ -41,7 +76,7 @@ function joinRoom(nickname: string, code: string): void {
         </div>
 
         <div class="room-actions">
-          <button class="room-action-card room-action-card--primary" type="button" @click="createOpen = true">
+          <button class="room-action-card room-action-card--primary" type="button" @click="openCreateDialog">
             <span class="room-action-card__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24">
                 <path d="M12 5v14M5 12h14" />
@@ -56,7 +91,7 @@ function joinRoom(nickname: string, code: string): void {
             </svg>
           </button>
 
-          <button class="room-action-card" type="button" @click="joinOpen = true">
+          <button class="room-action-card" type="button" @click="openJoinDialog">
             <span class="room-action-card__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24">
                 <path d="M8 12h8M12 8l4 4-4 4" />
@@ -101,8 +136,8 @@ function joinRoom(nickname: string, code: string): void {
           </button>
         </div>
 
-        <div class="home-status">
-          <span><i></i>本地模拟服务已连接</span>
+        <div class="home-status" :class="{ 'home-status--error': game.connectionStatus === 'error' }">
+          <span><i></i>{{ game.connectionLabel }}</span>
           <span v-if="game.nickname">上次昵称：{{ game.nickname }}</span>
         </div>
       </section>
@@ -111,12 +146,16 @@ function joinRoom(nickname: string, code: string): void {
     <CreateRoomDialog
       :open="createOpen"
       :nickname="game.nickname"
+      :loading="creating"
+      :error="admissionError"
       @close="createOpen = false"
       @create="createRoom"
     />
     <JoinRoomDialog
       :open="joinOpen"
       :nickname="game.nickname"
+      :loading="joining"
+      :error="admissionError"
       @close="joinOpen = false"
       @join="joinRoom"
     />

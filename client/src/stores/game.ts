@@ -1,20 +1,38 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
+import { clearSession, getClientInstanceId, loadSession, saveSession } from "../persistence/session";
+import type {
+  EventType,
+  PersistedSession,
+  ProtocolDifficulty,
+  ProtocolDiscussion,
+  ProtocolPlayer,
+  ProtocolPuzzleStyle,
+  ProtocolQuestion,
+  ProtocolSettlement,
+  RoomSnapshotPayload,
+  ServerEvent,
+  SnapshotTimelineEntry,
+  TransportStatus,
+} from "../protocol/types";
+import { ServerTransport, TransportError } from "../transport/ServerTransport";
 import type {
   DiscussionMessage,
   LocalHistoryEntry,
+  Player,
   Puzzle,
   Question,
   RoomConfig,
   RoomStage,
   Settlement,
   TimelineItem,
-  Player,
 } from "../types/game";
 
 const PROFILE_KEY = "trepang-soup.profile";
 const HISTORY_KEY = "trepang-soup.history";
+const SERVER_URL = (import.meta.env.VITE_SERVER_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
+const TRANSPORT_MODE = import.meta.env.VITE_TRANSPORT_MODE === "mock" ? "mock" : "server";
 const sleep = (duration: number) => new Promise((resolve) => window.setTimeout(resolve, duration));
 
 const MOCK_PUZZLE: Puzzle = {
@@ -28,13 +46,31 @@ const MOCK_PUZZLE: Puzzle = {
 };
 
 const PLAYER_COLORS = ["#d7a95b", "#7fb2c7", "#b492ca", "#87b69a", "#d48f82"];
+const TO_PROTOCOL_DIFFICULTY: Record<RoomConfig["difficulty"], ProtocolDifficulty> = {
+  新手: "beginner",
+  标准: "standard",
+  烧脑: "hard",
+};
+const FROM_PROTOCOL_DIFFICULTY: Record<ProtocolDifficulty, RoomConfig["difficulty"]> = {
+  beginner: "新手",
+  standard: "标准",
+  hard: "烧脑",
+};
+const TO_PROTOCOL_STYLE: Record<RoomConfig["style"], ProtocolPuzzleStyle> = {
+  轻松日常: "light_daily",
+  经典悬疑: "classic_mystery",
+  暗黑惊悚: "dark_thriller",
+  荒诞幽默: "absurd_humor",
+};
+const FROM_PROTOCOL_STYLE: Record<ProtocolPuzzleStyle, RoomConfig["style"]> = {
+  light_daily: "轻松日常",
+  classic_mystery: "经典悬疑",
+  dark_thriller: "暗黑惊悚",
+  absurd_humor: "荒诞幽默",
+};
 
 function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function timeAgoStamp(): number {
-  return Date.now() - 1000 * 60;
 }
 
 function loadJson<T>(key: string, fallback: T): T {
@@ -44,6 +80,94 @@ function loadJson<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "发生了未知错误。";
+}
+
+function accentFor(playerId: string, index = 0): string {
+  let hash = 0;
+  for (const character of playerId) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return PLAYER_COLORS[(hash + index) % PLAYER_COLORS.length];
+}
+
+function mapPlayer(player: ProtocolPlayer, index = 0): Player {
+  return {
+    ...player,
+    accent: accentFor(player.id, index),
+  };
+}
+
+function mapQuestion(question: ProtocolQuestion): Question {
+  return { ...question };
+}
+
+function mapDiscussion(discussion: ProtocolDiscussion): DiscussionMessage {
+  return { ...discussion };
+}
+
+function mapSettlement(settlement: ProtocolSettlement): Settlement {
+  return {
+    score: settlement.score,
+    grade: settlement.grade,
+    summary: settlement.summary,
+    awards: settlement.awards.map((award) => ({
+      title: award.title,
+      recipient: award.recipientName,
+      reason: award.reason,
+    })),
+    endedAt: settlement.endedAt,
+    gaveUp: settlement.gaveUp,
+  };
+}
+
+function timelineFromEvent(
+  eventId: number,
+  eventType: EventType,
+  createdAt: number,
+  payload: Record<string, unknown>,
+): TimelineItem | null {
+  if (eventType === "room.started") {
+    return {
+      id: `event-${eventId}`,
+      kind: "system",
+      createdAt,
+      title: "推理开始",
+      content: "主持人已经端上汤面。讨论可以天马行空，正式问题会按顺序回答。",
+    };
+  }
+  if (eventType === "question.answered") {
+    const question = payload.question as ProtocolQuestion | undefined;
+    return question
+      ? {
+          id: `event-${eventId}`,
+          kind: "qa",
+          createdAt,
+          question: mapQuestion(question),
+        }
+      : null;
+  }
+  if (eventType === "hint.created") {
+    return {
+      id: `event-${eventId}`,
+      kind: "hint",
+      createdAt,
+      actorName: String(payload.requestedByName || "玩家"),
+      title: `公共提示 · 第 ${Number(payload.hintNumber || 1)} 次`,
+      content: String(payload.content || ""),
+    };
+  }
+  if (eventType === "conclusion.close" || eventType === "conclusion.rejected") {
+    return {
+      id: `event-${eventId}`,
+      kind: "system",
+      createdAt,
+      title: "结案反馈",
+      content: String(payload.feedback || "主持人请大家继续补全推理。"),
+    };
+  }
+  return null;
 }
 
 function mockAnswer(content: string): Pick<Question, "answer" | "answerType"> {
@@ -60,9 +184,6 @@ function mockAnswer(content: string): Pick<Question, "answer" | "answerType"> {
   if (/室友.*死|尸体|鬼|灵异/.test(normalized)) {
     return { answer: "否。室友还活着，也没有灵异因素。先别急着把寝室变成鬼片片场。", answerType: "no" };
   }
-  if (/时间|凌晨/.test(normalized)) {
-    return { answer: "部分相关。凌晨让她更警觉，但不是谜底的核心机关。", answerType: "partial" };
-  }
   return { answer: "无关。这个方向暂时不能帮助你们解释她为什么故意不进门。", answerType: "irrelevant" };
 }
 
@@ -70,6 +191,7 @@ export const useGameStore = defineStore("game", () => {
   const savedProfile = loadJson<{ nickname: string }>(PROFILE_KEY, { nickname: "" });
   const nickname = ref(savedProfile.nickname);
   const roomCode = ref("");
+  const roomId = ref("");
   const stage = ref<RoomStage>("lobby");
   const roomConfig = ref<RoomConfig>({
     source: "ai",
@@ -78,7 +200,7 @@ export const useGameStore = defineStore("game", () => {
   });
   const selfId = ref(id("self"));
   const players = ref<Player[]>([]);
-  const puzzle = ref<Puzzle>(MOCK_PUZZLE);
+  const puzzle = ref<Puzzle>({ ...MOCK_PUZZLE });
   const questions = ref<Question[]>([]);
   const timeline = ref<TimelineItem[]>([]);
   const discussions = ref<DiscussionMessage[]>([]);
@@ -86,14 +208,38 @@ export const useGameStore = defineStore("game", () => {
   const settlement = ref<Settlement | null>(null);
   const processingQueue = ref(false);
   const history = ref<LocalHistoryEntry[]>(loadJson<LocalHistoryEntry[]>(HISTORY_KEY, []));
+  const connectionStatus = ref<TransportStatus>(TRANSPORT_MODE === "mock" ? "connected" : "idle");
+  const lastError = ref("");
+  const lastEventId = ref(0);
   let roomRevision = 0;
+  let activeSession: PersistedSession | null = null;
+
+  const transport = new ServerTransport(SERVER_URL);
+  transport.onStatus((status) => {
+    connectionStatus.value = status;
+  });
+  transport.onEvent(applyServerEvent);
 
   const self = computed(() => players.value.find((player) => player.id === selfId.value));
   const isHost = computed(() => self.value?.isHost ?? false);
+  const isServerMode = computed(() => TRANSPORT_MODE === "server");
   const onlineCount = computed(() => players.value.filter((player) => player.online).length);
   const pendingQuestions = computed(() =>
     questions.value.filter((question) => question.status === "queued" || question.status === "thinking"),
   );
+  const connectionLabel = computed(() => {
+    if (TRANSPORT_MODE === "mock") return "本地模拟服务已连接";
+    const labels: Record<TransportStatus, string> = {
+      idle: "等待连接后端服务",
+      checking: "正在检查后端服务",
+      available: "真实后端服务可用",
+      connecting: "正在连接多人房间",
+      connected: "真实多人服务已连接",
+      disconnected: "与房间的连接已断开",
+      error: "后端服务暂时不可用",
+    };
+    return labels[connectionStatus.value];
+  });
 
   function persistProfile(): void {
     window.localStorage.setItem(PROFILE_KEY, JSON.stringify({ nickname: nickname.value }));
@@ -101,6 +247,12 @@ export const useGameStore = defineStore("game", () => {
 
   function persistHistory(): void {
     window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.value));
+  }
+
+  function updatePersistedEventId(): void {
+    if (!activeSession) return;
+    activeSession = { ...activeSession, lastEventId: lastEventId.value };
+    saveSession(activeSession);
   }
 
   function resetRoom(): void {
@@ -111,6 +263,8 @@ export const useGameStore = defineStore("game", () => {
     hintCount.value = 0;
     settlement.value = null;
     processingQueue.value = false;
+    lastEventId.value = 0;
+    lastError.value = "";
   }
 
   function makePlayers(selfNickname: string, host: boolean): Player[] {
@@ -151,34 +305,138 @@ export const useGameStore = defineStore("game", () => {
     ];
   }
 
-  function createRoom(profileName: string, config: RoomConfig): string {
-    nickname.value = profileName.trim();
-    persistProfile();
-    resetRoom();
-    roomCode.value = "N7K4WM";
-    roomConfig.value = config;
-    players.value = makePlayers(nickname.value, true);
-    stage.value = "lobby";
-    return roomCode.value;
+  async function checkServer(): Promise<void> {
+    if (TRANSPORT_MODE === "mock") {
+      connectionStatus.value = "connected";
+      return;
+    }
+    try {
+      await transport.healthCheck();
+      lastError.value = "";
+    } catch (error) {
+      lastError.value = errorMessage(error);
+    }
   }
 
-  function joinRoom(profileName: string, code: string): string {
+  async function createRoom(profileName: string, config: RoomConfig): Promise<string> {
     nickname.value = profileName.trim();
     persistProfile();
     resetRoom();
-    roomCode.value = code.trim().toUpperCase();
-    roomConfig.value = { source: "ai", difficulty: "新手", style: "经典悬疑" };
-    players.value = makePlayers(nickname.value, false);
-    stage.value = "lobby";
-    return roomCode.value;
+    roomConfig.value = config;
+
+    if (TRANSPORT_MODE === "mock") {
+      roomCode.value = "N7K4WM";
+      roomId.value = "mock-room";
+      players.value = makePlayers(nickname.value, true);
+      stage.value = "lobby";
+      return roomCode.value;
+    }
+
+    transport.disconnect();
+    try {
+      const admission = await transport.createRoom({
+        nickname: nickname.value,
+        source: config.source,
+        difficulty: config.source === "ai" ? TO_PROTOCOL_DIFFICULTY[config.difficulty] : null,
+        style: config.source === "ai" ? TO_PROTOCOL_STYLE[config.style] : null,
+      });
+      activeSession = { ...admission, lastEventId: 0 };
+      saveSession(activeSession);
+      roomId.value = admission.roomId;
+      roomCode.value = admission.inviteCode;
+      selfId.value = admission.playerId;
+      await transport.connect(activeSession);
+      return admission.inviteCode;
+    } catch (error) {
+      lastError.value = errorMessage(error);
+      throw error;
+    }
+  }
+
+  async function joinRoom(profileName: string, code: string): Promise<string> {
+    nickname.value = profileName.trim();
+    persistProfile();
+    resetRoom();
+
+    if (TRANSPORT_MODE === "mock") {
+      roomCode.value = code.trim().toUpperCase();
+      roomId.value = "mock-room";
+      roomConfig.value = { source: "ai", difficulty: "新手", style: "经典悬疑" };
+      players.value = makePlayers(nickname.value, false);
+      stage.value = "lobby";
+      return roomCode.value;
+    }
+
+    transport.disconnect();
+    try {
+      const admission = await transport.joinRoom({
+        nickname: nickname.value,
+        inviteCode: code.trim().toUpperCase(),
+        clientInstanceId: getClientInstanceId(),
+      });
+      activeSession = { ...admission, lastEventId: 0 };
+      saveSession(activeSession);
+      roomId.value = admission.roomId;
+      roomCode.value = admission.inviteCode;
+      selfId.value = admission.playerId;
+      await transport.connect(activeSession);
+      return admission.inviteCode;
+    } catch (error) {
+      lastError.value = errorMessage(error);
+      throw error;
+    }
+  }
+
+  async function ensureRoom(): Promise<void> {
+    if (TRANSPORT_MODE === "mock") {
+      ensureDemoRoom();
+      return;
+    }
+    if (roomId.value && connectionStatus.value === "connected") return;
+
+    const stored = loadSession();
+    if (!stored) throw new TransportError("没有可恢复的房间，请重新加入。", "NO_SESSION");
+    try {
+      const resumed = await transport.resumeSession(stored);
+      activeSession = {
+        roomId: resumed.roomId,
+        inviteCode: stored.inviteCode,
+        playerId: resumed.playerId,
+        sessionToken: resumed.sessionToken,
+        expiresAt: resumed.expiresAt,
+        // Public room state is not persisted, so force a complete snapshot after app restart.
+        lastEventId: 0,
+      };
+      saveSession(activeSession);
+      roomId.value = activeSession.roomId;
+      roomCode.value = activeSession.inviteCode;
+      selfId.value = activeSession.playerId;
+      await transport.connect(activeSession);
+    } catch (error) {
+      clearSession();
+      lastError.value = errorMessage(error);
+      throw error;
+    }
   }
 
   function ensureDemoRoom(): void {
     if (roomCode.value) return;
-    createRoom(nickname.value || "海盐", roomConfig.value);
+    nickname.value ||= "海盐";
+    roomCode.value = "N7K4WM";
+    roomId.value = "mock-room";
+    players.value = makePlayers(nickname.value, true);
+    stage.value = "lobby";
   }
 
-  function startGame(): void {
+  async function startGame(): Promise<void> {
+    if (TRANSPORT_MODE === "server") {
+      await runCommand("room.start", {}, ["room.started"]);
+      return;
+    }
+    mockStartGame();
+  }
+
+  function mockStartGame(): void {
     stage.value = "playing";
     timeline.value = [
       {
@@ -195,21 +453,25 @@ export const useGameStore = defineStore("game", () => {
         authorId: "mock-player-moon",
         authorName: "月半",
         content: "我先盯住“为什么要大声说钥匙丢了”，感觉是故意给谁听的。",
-        createdAt: timeAgoStamp(),
+        createdAt: Date.now() - 60_000,
       },
       {
         id: id("discussion"),
         authorId: "mock-player-seven",
         authorName: "小七",
         content: "门缝里的光也怪，室友如果睡了为什么还亮着？",
-        createdAt: Date.now() - 28000,
+        createdAt: Date.now() - 28_000,
       },
     ];
   }
 
-  function sendDiscussion(content: string): void {
+  async function sendDiscussion(content: string): Promise<void> {
     const clean = content.trim();
     if (!clean) return;
+    if (TRANSPORT_MODE === "server") {
+      await runCommand("discussion.send", { content: clean }, ["discussion.created"]);
+      return;
+    }
     discussions.value.push({
       id: id("discussion"),
       authorId: selfId.value,
@@ -219,38 +481,17 @@ export const useGameStore = defineStore("game", () => {
     });
   }
 
-  async function processQueue(): Promise<void> {
-    if (processingQueue.value) return;
-    processingQueue.value = true;
-    const activeRevision = roomRevision;
-
-    // MockTransport deliberately serializes AI work so UI behavior matches the future server queue.
-    while (true) {
-      const next = questions.value.find((question) => question.status === "queued");
-      if (!next) break;
-      next.status = "thinking";
-      await sleep(1400);
-      // Closing or replacing a room invalidates any delayed mock-AI response still in flight.
-      if (activeRevision !== roomRevision) break;
-      const result = mockAnswer(next.content);
-      next.answer = result.answer;
-      next.answerType = result.answerType;
-      next.status = "answered";
-      timeline.value.push({
-        id: id("qa"),
-        kind: "qa",
-        createdAt: Date.now(),
-        question: { ...next },
-      });
-      await sleep(250);
-    }
-
-    if (activeRevision === roomRevision) processingQueue.value = false;
-  }
-
-  function submitQuestion(content: string): void {
+  async function submitQuestion(content: string): Promise<void> {
     const clean = content.trim();
     if (!clean) return;
+    if (TRANSPORT_MODE === "server") {
+      await runCommand(
+        "question.submit",
+        { clientQuestionId: id("local-question"), content: clean },
+        ["question.queued"],
+      );
+      return;
+    }
     questions.value.push({
       id: id("question"),
       authorId: selfId.value,
@@ -259,10 +500,36 @@ export const useGameStore = defineStore("game", () => {
       createdAt: Date.now(),
       status: "queued",
     });
-    void processQueue();
+    void processMockQueue();
   }
 
-  function removeQuestion(questionId: string): void {
+  async function processMockQueue(): Promise<void> {
+    if (processingQueue.value) return;
+    processingQueue.value = true;
+    const activeRevision = roomRevision;
+    while (true) {
+      const next = questions.value.find((question) => question.status === "queued");
+      if (!next) break;
+      next.status = "thinking";
+      await sleep(1_400);
+      if (activeRevision !== roomRevision) break;
+      Object.assign(next, mockAnswer(next.content), { status: "answered" as const });
+      timeline.value.push({
+        id: id("qa"),
+        kind: "qa",
+        createdAt: Date.now(),
+        question: { ...next },
+      });
+      await sleep(250);
+    }
+    if (activeRevision === roomRevision) processingQueue.value = false;
+  }
+
+  async function removeQuestion(questionId: string): Promise<void> {
+    if (TRANSPORT_MODE === "server") {
+      await runCommand("question.cancel", { questionId }, ["question.cancelled"]);
+      return;
+    }
     const index = questions.value.findIndex(
       (question) =>
         question.id === questionId && question.authorId === selfId.value && question.status === "queued",
@@ -271,6 +538,11 @@ export const useGameStore = defineStore("game", () => {
   }
 
   async function requestHint(): Promise<void> {
+    if (TRANSPORT_MODE === "server") {
+      const event = await runCommand("hint.request", {}, ["hint.created", "hint.failed"], 30_000);
+      if (event.type === "hint.failed") throw new TransportError("主持人暂时无法整理提示。");
+      return;
+    }
     const requestor = nickname.value;
     hintCount.value += 1;
     timeline.value.push({
@@ -280,7 +552,7 @@ export const useGameStore = defineStore("game", () => {
       title: `${requestor} 举起了白旗`,
       content: "主持人正在把散落的线索重新摆上桌面……",
     });
-    await sleep(1200);
+    await sleep(1_200);
     timeline.value.push({
       id: id("hint"),
       kind: "hint",
@@ -292,21 +564,39 @@ export const useGameStore = defineStore("game", () => {
     });
   }
 
-  function conclusionLooksCorrect(content: string): boolean {
-    const normalized = content.replace(/\s/g, "");
-    const hasDanger = /危险|挟持|绑架|闯入|歹徒|坏人/.test(normalized);
-    const hasSignal = /灯|闪|信号|求救/.test(normalized);
-    const hasPretend = /假装|故意|骗|伪装|钥匙/.test(normalized);
-    return hasDanger && hasSignal && hasPretend;
-  }
-
-  async function submitConclusion(content: string): Promise<"correct" | "close"> {
+  async function submitConclusion(content: string): Promise<"correct" | "close" | "rejected"> {
+    if (TRANSPORT_MODE === "server") {
+      const event = await runCommand(
+        "conclusion.submit",
+        { content: content.trim() },
+        ["game.settled", "conclusion.close", "conclusion.rejected"],
+        35_000,
+      );
+      return event.type === "game.settled"
+        ? "correct"
+        : event.type === "conclusion.close"
+          ? "close"
+          : "rejected";
+    }
     await sleep(900);
-    if (conclusionLooksCorrect(content)) {
+    const normalized = content.replace(/\s/g, "");
+    const correct =
+      /危险|挟持|绑架|闯入|歹徒|坏人/.test(normalized) &&
+      /灯|闪|信号|求救/.test(normalized) &&
+      /假装|故意|骗|伪装|钥匙/.test(normalized);
+    if (correct) {
       finishGame(false);
       return "correct";
     }
     return "close";
+  }
+
+  async function giveUp(): Promise<void> {
+    if (TRANSPORT_MODE === "server") {
+      await runCommand("conclusion.give_up", {}, ["game.settled"]);
+      return;
+    }
+    finishGame(true);
   }
 
   function finishGame(gaveUp: boolean): void {
@@ -316,49 +606,33 @@ export const useGameStore = defineStore("game", () => {
       score,
       grade: score >= 90 ? "S" : score >= 80 ? "A" : score >= 70 ? "B" : "C",
       summary: gaveUp
-        ? "你们沿着门口的异常行为摸到了真相边缘，只差把灯光和室友的处境连起来。下一碗汤，记得先问“这个动作是在演给谁看”。"
-        : "你们先锁定了“钥匙丢了”是一场表演，再把门缝里的光还原成求救信号。思路从行为动机切入，最后拼出了完整因果链。",
+        ? "你们沿着门口的异常行为摸到了真相边缘，只差把灯光和室友的处境连起来。"
+        : "你们先锁定了“钥匙丢了”是一场表演，再把门缝里的光还原成求救信号。",
       awards: [
         {
           title: "MVP 玩家",
           recipient: nickname.value,
           reason: "把伪装、求救信号和室友的危险处境连成了完整闭环。",
         },
-        {
-          title: "最有价值问题",
-          recipient: "小七",
-          reason: "“门缝里的光是室友主动制造的吗？”让大家第一次摸到核心机关。",
-        },
-        {
-          title: "最佳带偏奖",
-          recipient: "月半",
-          reason: "坚定怀疑宿管阿姨长达三分钟，气势很足，证据没有。",
-        },
       ],
       endedAt: Date.now(),
       gaveUp,
     };
     stage.value = "settlement";
-
-    // Persist only on the local machine; completed room data is not designed for server storage.
-    const entry: LocalHistoryEntry = {
-      id: id("history"),
-      roomCode: roomCode.value,
-      puzzle: { ...puzzle.value },
-      timeline: timeline.value.map((item) => ({ ...item })),
-      discussions: discussions.value.map((message) => ({ ...message })),
-      settlement: { ...settlement.value },
-    };
-    history.value = [entry, ...history.value].slice(0, 30);
-    persistHistory();
+    persistCompletedGame();
   }
 
-  function closeRoom(): void {
+  async function closeRoom(): Promise<void> {
     if (!isHost.value) return;
+    if (TRANSPORT_MODE === "server") {
+      await runCommand("room.close", {}, ["room.closed"]);
+      return;
+    }
     resetRoom();
     players.value = [];
     roomCode.value = "";
-    stage.value = "lobby";
+    roomId.value = "";
+    stage.value = "closed";
   }
 
   function clearHistory(): void {
@@ -366,9 +640,189 @@ export const useGameStore = defineStore("game", () => {
     persistHistory();
   }
 
+  async function runCommand(
+    type: Parameters<ServerTransport["sendAndWait"]>[0],
+    payload: Record<string, unknown>,
+    targets: Parameters<ServerTransport["sendAndWait"]>[2],
+    timeoutMs?: number,
+  ): Promise<ServerEvent> {
+    lastError.value = "";
+    try {
+      return await transport.sendAndWait(type, payload, targets, timeoutMs);
+    } catch (error) {
+      lastError.value = errorMessage(error);
+      throw error;
+    }
+  }
+
+  function applyServerEvent(event: ServerEvent): void {
+    if (event.type === "protocol.error" || event.type === "session.rejected" || event.type === "command.rejected") {
+      const error = event.payload.error as Record<string, unknown> | undefined;
+      lastError.value = typeof error?.message === "string" ? error.message : "服务端拒绝了当前操作。";
+      return;
+    }
+
+    if (event.type === "room.snapshot") {
+      applySnapshot(event.payload as unknown as RoomSnapshotPayload);
+      return;
+    }
+
+    if (event.eventId <= lastEventId.value) return;
+    if (lastEventId.value > 0 && event.eventId > lastEventId.value + 1) {
+      lastError.value = "房间事件出现缺口，请返回首页后重新进入房间。";
+      connectionStatus.value = "error";
+      return;
+    }
+    lastEventId.value = event.eventId;
+    updatePersistedEventId();
+
+    if (event.type === "room.started") {
+      stage.value = "playing";
+      const surface = event.payload.puzzleSurface as Puzzle | undefined;
+      if (surface) puzzle.value = { ...surface, truth: "", keyFacts: [] };
+      addTimeline(event);
+    } else if (event.type === "room.closed") {
+      stage.value = "closed";
+      clearSession();
+      activeSession = null;
+      transport.disconnect();
+    } else if (event.type === "room.host_changed") {
+      const hostPlayerId = String(event.payload.hostPlayerId || "");
+      players.value = players.value.map((player) => ({ ...player, isHost: player.id === hostPlayerId }));
+    } else if (event.type === "player.joined") {
+      const player = event.payload.player as ProtocolPlayer | undefined;
+      if (player && !players.value.some((item) => item.id === player.id)) {
+        players.value.push(mapPlayer(player, players.value.length));
+      }
+    } else if (event.type === "player.left" || event.type === "player.kicked") {
+      const playerId = String(event.payload.playerId || "");
+      players.value = players.value.filter((player) => player.id !== playerId);
+      if (playerId === selfId.value) stage.value = "closed";
+    } else if (event.type === "player.online_changed") {
+      const playerId = String(event.payload.playerId || "");
+      const target = players.value.find((player) => player.id === playerId);
+      if (target) target.online = Boolean(event.payload.online);
+    } else if (event.type === "discussion.created") {
+      const discussion = event.payload.discussion as ProtocolDiscussion | undefined;
+      if (discussion && !discussions.value.some((item) => item.id === discussion.id)) {
+        discussions.value.push(mapDiscussion(discussion));
+      }
+    } else if (event.type === "question.queued") {
+      const question = event.payload.question as ProtocolQuestion | undefined;
+      if (question && !questions.value.some((item) => item.id === question.id)) {
+        questions.value.push(mapQuestion(question));
+      }
+    } else if (event.type === "question.thinking") {
+      updateQuestionStatus(String(event.payload.questionId || ""), "thinking");
+    } else if (event.type === "question.cancelled") {
+      updateQuestionStatus(String(event.payload.questionId || ""), "cancelled");
+    } else if (event.type === "question.answered") {
+      const question = event.payload.question as ProtocolQuestion | undefined;
+      if (question) replaceQuestion(mapQuestion(question));
+      addTimeline(event);
+    } else if (event.type === "question.failed") {
+      updateQuestionStatus(String(event.payload.questionId || ""), "failed");
+      const error = event.payload.error as Record<string, unknown> | undefined;
+      if (typeof error?.message === "string") lastError.value = error.message;
+    } else if (event.type === "hint.created") {
+      hintCount.value = Number(event.payload.hintNumber || hintCount.value + 1);
+      addTimeline(event);
+    } else if (event.type === "hint.failed") {
+      const error = event.payload.error as Record<string, unknown> | undefined;
+      lastError.value = typeof error?.message === "string" ? error.message : "提示生成失败。";
+    } else if (event.type === "conclusion.close" || event.type === "conclusion.rejected") {
+      addTimeline(event);
+    } else if (event.type === "game.settled") {
+      applySettlement(event.payload as unknown as ProtocolSettlement);
+    }
+  }
+
+  function applySnapshot(snapshot: RoomSnapshotPayload): void {
+    roomId.value = snapshot.room.roomId;
+    roomCode.value = snapshot.room.inviteCode;
+    stage.value = snapshot.room.stage;
+    selfId.value = snapshot.self.playerId;
+    nickname.value = snapshot.self.nickname;
+    roomConfig.value = {
+      source: snapshot.room.source,
+      difficulty: snapshot.room.difficulty
+        ? FROM_PROTOCOL_DIFFICULTY[snapshot.room.difficulty]
+        : "新手",
+      style: snapshot.room.style ? FROM_PROTOCOL_STYLE[snapshot.room.style] : "经典悬疑",
+    };
+    players.value = snapshot.players.map(mapPlayer);
+    questions.value = snapshot.questions.map(mapQuestion);
+    discussions.value = snapshot.discussions.map(mapDiscussion);
+    hintCount.value = snapshot.room.hintCount;
+    timeline.value = snapshot.timeline
+      .map((item: SnapshotTimelineEntry) =>
+        timelineFromEvent(item.eventId, item.type, item.createdAt, item.payload),
+      )
+      .filter((item): item is TimelineItem => item !== null);
+    if (snapshot.puzzleSurface) {
+      puzzle.value = {
+        ...snapshot.puzzleSurface,
+        truth: snapshot.settlement?.truth || "",
+        keyFacts: snapshot.settlement?.keyFacts || [],
+      };
+    }
+    settlement.value = snapshot.settlement ? mapSettlement(snapshot.settlement) : null;
+    lastEventId.value = snapshot.lastEventId;
+    updatePersistedEventId();
+    if (snapshot.settlement) persistCompletedGame();
+  }
+
+  function applySettlement(value: ProtocolSettlement): void {
+    settlement.value = mapSettlement(value);
+    puzzle.value = {
+      ...puzzle.value,
+      truth: value.truth,
+      keyFacts: [...value.keyFacts],
+    };
+    stage.value = "settlement";
+    persistCompletedGame();
+  }
+
+  function updateQuestionStatus(questionId: string, status: Question["status"]): void {
+    const question = questions.value.find((item) => item.id === questionId);
+    if (question) question.status = status;
+  }
+
+  function replaceQuestion(question: Question): void {
+    const index = questions.value.findIndex((item) => item.id === question.id);
+    if (index >= 0) questions.value[index] = question;
+    else questions.value.push(question);
+  }
+
+  function addTimeline(event: ServerEvent): void {
+    if (timeline.value.some((item) => item.id === `event-${event.eventId}`)) return;
+    const item = timelineFromEvent(event.eventId, event.type, event.serverTime, event.payload);
+    if (item) timeline.value.push(item);
+  }
+
+  function persistCompletedGame(): void {
+    if (!settlement.value || !puzzle.value.truth) return;
+    const entryId = `history-${roomId.value}-${settlement.value.endedAt}`;
+    if (history.value.some((entry) => entry.id === entryId)) return;
+    const entry: LocalHistoryEntry = {
+      id: entryId,
+      roomCode: roomCode.value,
+      puzzle: { ...puzzle.value, keyFacts: [...puzzle.value.keyFacts] },
+      timeline: timeline.value.map((item) => ({ ...item })),
+      discussions: discussions.value.map((message) => ({ ...message })),
+      settlement: {
+        ...settlement.value,
+        awards: settlement.value.awards.map((award) => ({ ...award })),
+      },
+    };
+    history.value = [entry, ...history.value].slice(0, 30);
+    persistHistory();
+  }
+
   return {
     nickname,
     roomCode,
+    roomId,
     stage,
     roomConfig,
     selfId,
@@ -380,12 +834,18 @@ export const useGameStore = defineStore("game", () => {
     hintCount,
     settlement,
     history,
+    connectionStatus,
+    connectionLabel,
+    lastError,
+    isServerMode,
     self,
     isHost,
     onlineCount,
     pendingQuestions,
+    checkServer,
     createRoom,
     joinRoom,
+    ensureRoom,
     ensureDemoRoom,
     startGame,
     sendDiscussion,
@@ -393,6 +853,7 @@ export const useGameStore = defineStore("game", () => {
     removeQuestion,
     requestHint,
     submitConclusion,
+    giveUp,
     finishGame,
     closeRoom,
     clearHistory,

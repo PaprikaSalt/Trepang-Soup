@@ -1,8 +1,8 @@
-export type RoomStage = "lobby" | "playing" | "settlement";
+export type RoomStage = "lobby" | "playing" | "settlement" | "closed";
 export type PuzzleSource = "ai" | "library";
 export type Difficulty = "新手" | "标准" | "烧脑";
 export type PuzzleStyle = "轻松日常" | "经典悬疑" | "暗黑惊悚" | "荒诞幽默";
-export type QuestionStatus = "queued" | "thinking" | "answered" | "failed";
+export type QuestionStatus = "queued" | "thinking" | "answered" | "cancelled" | "failed";
 export type TimelineKind = "system" | "qa" | "hint";
 
 export interface Player {

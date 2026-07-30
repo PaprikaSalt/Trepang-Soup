@@ -13,19 +13,23 @@
 
 ## 当前开发阶段
 
-Windows 客户端已经实现完整模拟流程。服务端已经提供创建、加入、恢复、WebSocket 快照与
-事件补发，以及讨论、串行问答、提示和结案流程，可以开始替换客户端模拟传输层。
+Windows 客户端已经接入服务端的 HTTP/WebSocket 多人链路，创建、加入、恢复、玩家同步、
+讨论、串行问答、提示、结案和结算均可真实联调。
 
 当前服务端使用可替换的确定性开发主持人；DeepSeek、管理员题库和 SQLite 持久化仍待实现。
-客户端目前尚未连接服务端，也不会在本地保存 API Key。
+客户端不会保存 API Key；作答过程与结算记录仅保存在本机。
 
 ## 运行客户端
 
 ```powershell
 cd client
+Copy-Item .env.example .env
 pnpm install
 pnpm tauri dev
 ```
+
+修改 `.env` 中的 `VITE_SERVER_URL` 即可连接本机、WSL 或公网服务端。开发联调默认使用
+`http://127.0.0.1:8787`。
 
 ## 运行服务端
 
@@ -61,4 +65,5 @@ cd client
 pnpm tauri build
 ```
 
-客户端接入步骤见 `docs/客户端对接指南.md`，桌面构建说明见 `client/README.md`。
+客户端传输结构见 `docs/客户端对接指南.md`，桌面构建说明见 `client/README.md`，版本变化
+见 `CHANGELOG.md`。

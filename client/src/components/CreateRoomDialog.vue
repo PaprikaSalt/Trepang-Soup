@@ -7,6 +7,8 @@ import BaseModal from "./BaseModal.vue";
 const props = defineProps<{
   open: boolean;
   nickname: string;
+  loading?: boolean;
+  error?: string;
 }>();
 
 const emit = defineEmits<{
@@ -37,7 +39,7 @@ const styles: Array<{ value: PuzzleStyle; hint: string }> = [
 const canSubmit = computed(() => form.nickname.trim().length >= 1);
 
 function submit(): void {
-  if (!canSubmit.value) return;
+  if (!canSubmit.value || props.loading) return;
   emit("create", form.nickname.trim(), {
     source: form.source,
     difficulty: form.difficulty,
@@ -136,8 +138,10 @@ function submit(): void {
         </div>
       </div>
 
-      <button class="primary-button primary-button--full" type="submit" :disabled="!canSubmit">
-        创建房间
+      <p v-if="props.error" class="form-error">{{ props.error }}</p>
+      <button class="primary-button primary-button--full" type="submit" :disabled="!canSubmit || props.loading">
+        <span v-if="props.loading" class="button-spinner"></span>
+        {{ props.loading ? "正在连接房间……" : "创建房间" }}
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M5 12h14M14 7l5 5-5 5" />
         </svg>
