@@ -1,6 +1,6 @@
 [package]
 name = "trepang-soup"
-version = "0.1.1"
+version = "0.2.0"
 description = "Trepang Soup multiplayer turtle soup desktop client"
 authors = ["PaprikaSalt"]
 edition = "2021"

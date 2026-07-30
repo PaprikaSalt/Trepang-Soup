@@ -163,7 +163,13 @@ function timelineKey(item: TimelineItem): string {
         <section class="puzzle-panel">
           <div class="section-label">
             <span>汤面</span>
-            <small>{{ game.roomConfig.difficulty }} · {{ game.roomConfig.style }}</small>
+            <small>
+              {{
+                game.roomConfig.source === "library"
+                  ? "私人题库 · 随机抽取"
+                  : `${game.roomConfig.difficulty} · ${game.roomConfig.style}`
+              }}
+            </small>
           </div>
           <h1>{{ game.puzzle.title }}</h1>
           <blockquote>{{ game.puzzle.surface }}</blockquote>

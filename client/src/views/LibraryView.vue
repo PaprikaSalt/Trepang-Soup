@@ -1,73 +1,185 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import AppHeader from "../components/AppHeader.vue";
 import BaseModal from "../components/BaseModal.vue";
+import {
+  AdminTransportError,
+  adminTransport,
+  type LibraryPuzzle,
+  type PuzzleWrite,
+} from "../transport/AdminTransport";
 
-interface LibraryItem {
-  id: number;
+interface PuzzleDraft {
+  id: string | null;
   title: string;
   surface: string;
   truth: string;
+  keyFactsText: string;
   active: boolean;
 }
 
+const admin = adminTransport;
 const unlocked = ref(false);
 const password = ref("");
 const passwordError = ref("");
+const loginLoading = ref(false);
+const libraryLoading = ref(false);
+const libraryError = ref("");
 const editorOpen = ref(false);
-const editing = ref<LibraryItem | null>(null);
+const editorError = ref("");
+const saving = ref(false);
+const deleteOpen = ref(false);
+const deleting = ref(false);
+const editing = ref<PuzzleDraft | null>(null);
 const query = ref("");
-const items = ref<LibraryItem[]>([
-  {
-    id: 1,
-    title: "最后一班电梯",
-    surface: "男人每天都坐最后一班电梯回家，有一天却在一楼坐到天亮。",
-    truth: "这里将在真实后端接入后保存完整汤底。",
-    active: true,
-  },
-  {
-    id: 2,
-    title: "没有寄出的明信片",
-    surface: "她收到一张没有邮戳的明信片后，立刻取消了旅行。",
-    truth: "这里将在真实后端接入后保存完整汤底。",
-    active: true,
-  },
-  {
-    id: 3,
-    title: "雨夜的鞋印",
-    surface: "门外只有一串走向房间的湿鞋印，屋里却没有任何人。",
-    truth: "这里将在真实后端接入后保存完整汤底。",
-    active: false,
-  },
-]);
+const items = ref<LibraryPuzzle[]>([]);
 
-const filteredItems = computed(() =>
-  items.value.filter((item) => `${item.title}${item.surface}`.includes(query.value.trim())),
-);
+const filteredItems = computed(() => {
+  const needle = query.value.trim();
+  return needle
+    ? items.value.filter((item) => `${item.title}${item.surface}`.includes(needle))
+    : items.value;
+});
+const editingExisting = computed(() => Boolean(editing.value?.id));
 
-function unlock(): void {
-  if (password.value === "soup") {
+onMounted(async () => {
+  if (!admin.hasSession()) return;
+  libraryLoading.value = true;
+  try {
+    items.value = await admin.listPuzzles();
     unlocked.value = true;
-    passwordError.value = "";
-  } else {
-    passwordError.value = "演示模式密码是 soup。真实版本不会在客户端保存管理员密码。";
+  } catch (error) {
+    passwordError.value = handleAdminError(error);
+  } finally {
+    libraryLoading.value = false;
+  }
+});
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : "发生了未知错误。";
+}
+
+function handleAdminError(error: unknown): string {
+  const message = messageOf(error);
+  if (error instanceof AdminTransportError && error.status === 401) {
+    // 管理员令牌只保存在内存中，过期后立即退回登录页重新挑战。
+    admin.clearSession();
+    unlocked.value = false;
+    passwordError.value = message;
+    editorOpen.value = false;
+    deleteOpen.value = false;
+  }
+  return message;
+}
+
+async function unlock(): Promise<void> {
+  if (!password.value || loginLoading.value) return;
+  loginLoading.value = true;
+  passwordError.value = "";
+  try {
+    await admin.login(password.value);
+    libraryLoading.value = true;
+    items.value = await admin.listPuzzles();
+    unlocked.value = true;
+    password.value = "";
+  } catch (error) {
+    passwordError.value = messageOf(error);
+  } finally {
+    loginLoading.value = false;
+    libraryLoading.value = false;
   }
 }
 
-function openEditor(item?: LibraryItem): void {
+function openEditor(item?: LibraryPuzzle): void {
   editing.value = item
-    ? { ...item }
-    : { id: Date.now(), title: "", surface: "", truth: "", active: true };
+    ? {
+        id: item.id,
+        title: item.title,
+        surface: item.surface,
+        truth: item.truth,
+        keyFactsText: item.keyFacts.join("\n"),
+        active: item.active,
+      }
+    : {
+        id: null,
+        title: "",
+        surface: "",
+        truth: "",
+        keyFactsText: "",
+        active: true,
+      };
+  editorError.value = "";
   editorOpen.value = true;
 }
 
-function saveItem(): void {
-  if (!editing.value?.title.trim() || !editing.value.surface.trim() || !editing.value.truth.trim()) return;
-  const index = items.value.findIndex((item) => item.id === editing.value?.id);
-  if (index >= 0) items.value[index] = { ...editing.value };
-  else items.value.unshift({ ...editing.value });
-  editorOpen.value = false;
+function closeEditor(): void {
+  if (!saving.value) editorOpen.value = false;
+}
+
+function puzzlePayload(): PuzzleWrite | null {
+  if (!editing.value) return null;
+  const title = editing.value.title.trim();
+  const surface = editing.value.surface.trim();
+  const truth = editing.value.truth.trim();
+  const keyFacts = editing.value.keyFactsText
+    .split(/\r?\n/)
+    .map((fact) => fact.trim())
+    .filter(Boolean);
+
+  if (!title) editorError.value = "请填写内部标题。";
+  else if (surface.length < 20) editorError.value = "汤面至少需要 20 个字符。";
+  else if (truth.length < 40) editorError.value = "汤底至少需要 40 个字符。";
+  else if (keyFacts.length < 2 || keyFacts.length > 8) {
+    editorError.value = "请填写 2 至 8 条关键事实，每行一条。";
+  } else if (new Set(keyFacts).size !== keyFacts.length) {
+    editorError.value = "关键事实不能重复。";
+  } else {
+    editorError.value = "";
+    return { title, surface, truth, keyFacts, active: editing.value.active };
+  }
+  return null;
+}
+
+async function saveItem(): Promise<void> {
+  if (saving.value) return;
+  const payload = puzzlePayload();
+  if (!payload || !editing.value) return;
+
+  saving.value = true;
+  try {
+    const saved = editing.value.id
+      ? await admin.updatePuzzle(editing.value.id, payload)
+      : await admin.createPuzzle(payload);
+    const index = items.value.findIndex((item) => item.id === saved.id);
+    if (index >= 0) items.value[index] = saved;
+    else items.value.unshift(saved);
+    editorOpen.value = false;
+  } catch (error) {
+    editorError.value = handleAdminError(error);
+  } finally {
+    saving.value = false;
+  }
+}
+
+function requestDelete(): void {
+  if (editing.value?.id) deleteOpen.value = true;
+}
+
+async function deleteItem(): Promise<void> {
+  if (!editing.value?.id || deleting.value) return;
+  deleting.value = true;
+  libraryError.value = "";
+  try {
+    await admin.deletePuzzle(editing.value.id);
+    items.value = items.value.filter((item) => item.id !== editing.value?.id);
+    deleteOpen.value = false;
+    editorOpen.value = false;
+  } catch (error) {
+    libraryError.value = handleAdminError(error);
+  } finally {
+    deleting.value = false;
+  }
 }
 </script>
 
@@ -89,12 +201,24 @@ function saveItem(): void {
         <form @submit.prevent="unlock">
           <label class="field">
             <span>管理员密码</span>
-            <input v-model="password" type="password" autocomplete="current-password" placeholder="输入专用密码" />
+            <input
+              v-model="password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="输入服务端配置的专用密码"
+            />
           </label>
           <p v-if="passwordError" class="form-error">{{ passwordError }}</p>
-          <button class="primary-button primary-button--full" type="submit">解锁题库</button>
+          <button
+            class="primary-button primary-button--full"
+            type="submit"
+            :disabled="!password || loginLoading"
+          >
+            <span v-if="loginLoading" class="button-spinner"></span>
+            {{ loginLoading ? "正在安全验证……" : "解锁题库" }}
+          </button>
         </form>
-        <small>当前为客户端演示界面，不会向服务器发送密码。</small>
+        <small>密码仅在本机参与一次性挑战计算，不会明文传输或保存。</small>
       </section>
 
       <template v-else>
@@ -104,7 +228,7 @@ function saveItem(): void {
             <h1>私人题库</h1>
             <p>只有你可以维护这些题目；房主开局时只能随机抽取。</p>
           </div>
-          <button class="primary-button" type="button" @click="openEditor()">
+          <button class="primary-button" type="button" :disabled="libraryLoading" @click="openEditor()">
             新增题目
             <span>+</span>
           </button>
@@ -121,15 +245,20 @@ function saveItem(): void {
           <div>
             <span>{{ items.filter((item) => item.active).length }} 道启用</span>
             <i></i>
-            <span>最近 10 道自动避开</span>
+            <span>共 {{ items.length }} 道</span>
           </div>
         </div>
 
-        <section class="library-list">
+        <p v-if="libraryError" class="library-state library-state--error">{{ libraryError }}</p>
+        <div v-if="libraryLoading" class="library-state">
+          <span class="button-spinner"></span>
+          正在读取题库……
+        </div>
+        <section v-else-if="filteredItems.length" class="library-list">
           <article v-for="item in filteredItems" :key="item.id" class="library-card">
             <span class="library-card__status" :class="{ inactive: !item.active }"></span>
             <div>
-              <small>{{ item.active ? "已启用" : "已停用" }}</small>
+              <small>{{ item.active ? "已启用" : "已停用" }} · {{ item.keyFacts.length }} 条关键事实</small>
               <h2>{{ item.title }}</h2>
               <p>{{ item.surface }}</p>
             </div>
@@ -141,6 +270,11 @@ function saveItem(): void {
             </button>
           </article>
         </section>
+        <div v-else class="library-empty">
+          <span>✦</span>
+          <h2>{{ query ? "没有匹配的题目" : "题库还是空的" }}</h2>
+          <p>{{ query ? "换一个关键词试试。" : "新增第一道题，私人题库房间就可以随机抽取了。" }}</p>
+        </div>
       </template>
     </main>
 
@@ -148,21 +282,39 @@ function saveItem(): void {
       :open="editorOpen"
       wide
       eyebrow="PUZZLE EDITOR"
-      :title="items.some((item) => item.id === editing?.id) ? '编辑题目' : '新增题目'"
-      @close="editorOpen = false"
+      :title="editingExisting ? '编辑题目' : '新增题目'"
+      @close="closeEditor"
     >
       <form v-if="editing" class="dialog-form" @submit.prevent="saveItem">
         <label class="field">
           <span>内部标题</span>
-          <input v-model="editing.title" maxlength="40" placeholder="方便你在题库中识别" />
+          <input v-model="editing.title" maxlength="80" placeholder="方便你在题库中识别" />
         </label>
         <label class="field">
           <span>汤面</span>
-          <textarea v-model="editing.surface" rows="4" maxlength="500" placeholder="玩家开局时看到的故事……"></textarea>
+          <textarea
+            v-model="editing.surface"
+            rows="4"
+            maxlength="800"
+            placeholder="玩家开局时看到的故事……"
+          ></textarea>
         </label>
         <label class="field">
-          <span>汤底与关键真相</span>
-          <textarea v-model="editing.truth" rows="7" maxlength="2000" placeholder="仅服务端与 AI 主持人可以读取……"></textarea>
+          <span>汤底</span>
+          <textarea
+            v-model="editing.truth"
+            rows="6"
+            maxlength="2000"
+            placeholder="仅服务端与 AI 主持人可以读取……"
+          ></textarea>
+        </label>
+        <label class="field">
+          <span>关键事实</span>
+          <textarea
+            v-model="editing.keyFactsText"
+            rows="4"
+            placeholder="每行一条，填写 2 至 8 条……"
+          ></textarea>
         </label>
         <label class="toggle-row">
           <span>
@@ -172,8 +324,41 @@ function saveItem(): void {
           <input v-model="editing.active" type="checkbox" />
           <i></i>
         </label>
-        <button class="primary-button primary-button--full" type="submit">保存题目</button>
+        <p v-if="editorError" class="form-error">{{ editorError }}</p>
+        <div class="modal-actions">
+          <button
+            v-if="editingExisting"
+            class="ghost-button ghost-button--danger"
+            type="button"
+            :disabled="saving"
+            @click="requestDelete"
+          >
+            删除题目
+          </button>
+          <button class="primary-button" type="submit" :disabled="saving">
+            <span v-if="saving" class="button-spinner"></span>
+            {{ saving ? "正在保存……" : "保存题目" }}
+          </button>
+        </div>
       </form>
+    </BaseModal>
+
+    <BaseModal
+      :open="deleteOpen"
+      eyebrow="DELETE PUZZLE"
+      title="确定删除这道题吗？"
+      description="删除后无法恢复；已经开始的房间不会受影响。"
+      @close="deleteOpen = false"
+    >
+      <div class="confirm-actions">
+        <button class="secondary-button" type="button" :disabled="deleting" @click="deleteOpen = false">
+          取消
+        </button>
+        <button class="danger-button" type="button" :disabled="deleting" @click="deleteItem">
+          <span v-if="deleting" class="button-spinner"></span>
+          {{ deleting ? "正在删除……" : "删除题目" }}
+        </button>
+      </div>
     </BaseModal>
   </div>
 </template>

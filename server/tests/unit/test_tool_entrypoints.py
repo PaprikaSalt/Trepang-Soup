@@ -1,12 +1,14 @@
 import subprocess
+import sys
 from pathlib import Path
 
 SERVER_ROOT = Path(__file__).resolve().parents[2]
 
 
 def run_tool(path: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+    # Reuse pytest's interpreter so the entrypoint check works in both WSL and Windows venvs.
     return subprocess.run(
-        [str(SERVER_ROOT / ".venv/bin/python"), path, *arguments],
+        [sys.executable, path, *arguments],
         cwd=SERVER_ROOT,
         check=False,
         capture_output=True,

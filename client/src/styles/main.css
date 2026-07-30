@@ -421,6 +421,8 @@ svg {
 
 .primary-button:disabled,
 .secondary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled,
 .hint-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
@@ -1030,6 +1032,7 @@ svg {
 .modal-card {
   position: relative;
   width: min(480px, calc(100vw - 48px));
+  max-height: calc(100vh - 60px);
   padding: 34px;
   border: 1px solid rgba(238, 243, 241, 0.13);
   border-radius: 24px;
@@ -1037,6 +1040,9 @@ svg {
     radial-gradient(circle at 90% 0, rgba(117, 157, 172, 0.12), transparent 33%),
     #192731;
   box-shadow: 0 35px 100px rgba(1, 5, 8, 0.5);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
 
 .modal-card--wide {
@@ -3088,6 +3094,55 @@ svg {
   height: 3px;
   border-radius: 50%;
   background: var(--amber);
+}
+
+.library-state {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--text-muted);
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.library-state--error {
+  justify-content: flex-start;
+  padding-inline: 17px;
+  border-color: rgba(217, 131, 120, 0.22);
+  color: #e5aaa1;
+  background: rgba(111, 47, 42, 0.14);
+}
+
+.library-empty {
+  display: grid;
+  min-height: 230px;
+  margin-top: 22px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 18px;
+  place-content: center;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.library-empty > span {
+  color: var(--amber);
+  font-size: 22px;
+}
+
+.library-empty h2 {
+  margin: 13px 0 7px;
+  font-size: 16px;
+}
+
+.library-empty p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 9px;
 }
 
 .library-card {
