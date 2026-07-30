@@ -206,6 +206,47 @@ class BlockingHost(DeterministicHostService):
         return HostAnswer(AnswerType.YES, "是。")
 
 
+class FlakyHost(DeterministicHostService):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def answer_question(
+        self,
+        puzzle: RuntimePuzzle,
+        answered_questions: list[Question],
+        content: str,
+    ) -> HostAnswer:
+        del puzzle, answered_questions, content
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("temporary model failure")
+        return HostAnswer(AnswerType.YES, "是。")
+
+
+async def test_question_queue_continues_after_ai_failure() -> None:
+    host = FlakyHost()
+    room, player_id = await create_room(host)
+    await start_room(room, player_id)
+    for index in range(2):
+        await room.execute_command(
+            player_id,
+            command(
+                room,
+                f"cmd_flaky_{index}",
+                CommandType.QUESTION_SUBMIT,
+                {
+                    "clientQuestionId": f"local_flaky_{index}",
+                    "content": f"第 {index} 个问题？",
+                },
+            ),
+        )
+    assert room.question_worker_task is not None
+    await room.question_worker_task
+
+    assert [item.status for item in room.questions] == ["failed", "answered"]
+    assert host.calls == 2
+
+
 async def test_only_queued_question_can_be_cancelled() -> None:
     host = BlockingHost()
     room, player_id = await create_room(host)

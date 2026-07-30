@@ -4,10 +4,13 @@ from typing import Protocol
 from app.domain.models import (
     AnswerType,
     ConclusionResult,
+    Difficulty,
     HostAnswer,
+    PuzzleStyle,
     Question,
     RuntimePuzzle,
 )
+from app.rooms.demo_puzzle import DEMO_PUZZLE
 
 
 class HostService(Protocol):
@@ -30,6 +33,24 @@ class HostService(Protocol):
         puzzle: RuntimePuzzle,
         content: str,
     ) -> ConclusionResult: ...
+
+
+class PuzzleGenerator(Protocol):
+    async def generate_puzzle(
+        self,
+        difficulty: Difficulty,
+        style: PuzzleStyle,
+    ) -> RuntimePuzzle: ...
+
+
+class DeterministicPuzzleGenerator:
+    async def generate_puzzle(
+        self,
+        difficulty: Difficulty,
+        style: PuzzleStyle,
+    ) -> RuntimePuzzle:
+        del difficulty, style
+        return DEMO_PUZZLE
 
 
 class DeterministicHostService:

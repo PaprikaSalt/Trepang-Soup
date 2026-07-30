@@ -16,8 +16,12 @@
 Windows 客户端已经接入服务端的 HTTP/WebSocket 多人链路，创建、加入、恢复、玩家同步、
 讨论、串行问答、提示、结案和结算均可真实联调。
 
-当前服务端使用可替换的确定性开发主持人；DeepSeek、管理员题库和 SQLite 持久化仍待实现。
-客户端不会保存 API Key；作答过程与结算记录仅保存在本机。
+服务端已实现 DeepSeek 题目生成、质量复核、主持问答、提示和结案判断，并提供结构化输出
+校验、超时、退避重试与格式修复。未配置 `DEEPSEEK_API_KEY` 时自动使用确定性开发主持人，
+因此本地开发不需要提交 Key。
+
+SQLite 只保存管理员私人题库和近期抽题记录；作答过程、房间事件和结算不会写入服务端
+数据库。客户端不会保存 API Key，完整作答记录仍只保存在本机。
 
 ## 运行客户端
 
@@ -39,6 +43,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.lock
 cp .env.example .env
+# 需要真实 AI 时，只在 server/.env 设置 DEEPSEEK_API_KEY
 uvicorn app.main:app --host 127.0.0.1 --port 8787 --reload
 ```
 
@@ -56,6 +61,13 @@ pytest
 ```bash
 cd server
 python tools/smoke_transport.py --base-url http://127.0.0.1:8787
+```
+
+脚本会建立两个独立客户端，验证成员同步、讨论、问答、提示、结算广播和结算前汤底保密。
+真实 DeepSeek 凭据配置完成后，可额外运行：
+
+```bash
+python tools/smoke_deepseek.py
 ```
 
 ## 构建安装包

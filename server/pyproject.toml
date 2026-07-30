@@ -1,11 +1,12 @@
 [project]
 name = "trepang-soup-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Backend service for the Trepang Soup multiplayer game"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "aiosqlite==0.22.1",
     "alembic==1.18.5",
+    "argon2-cffi==25.1.0",
     "fastapi==0.141.1",
     "httpx==0.28.1",
     "pydantic==2.13.4",

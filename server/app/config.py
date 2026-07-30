@@ -34,12 +34,22 @@ class Settings(BaseSettings):
 
     deepseek_api_key: SecretStr = SecretStr("")
     deepseek_base_url: AnyHttpUrl = AnyHttpUrl("https://api.deepseek.com")
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-v4-flash"
     deepseek_timeout_seconds: float = Field(default=45, gt=0, le=180)
+    deepseek_max_concurrency: int = Field(default=8, ge=1, le=100)
+    deepseek_retry_base_seconds: float = Field(default=0.5, ge=0, le=10)
+    deepseek_generation_attempts: int = Field(default=3, ge=1, le=5)
+    deepseek_trust_env: bool = False
 
     admin_password_hash: SecretStr = SecretStr("")
+    admin_challenge_ttl_seconds: int = Field(default=60, ge=10, le=300)
+    admin_token_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    admin_max_failures: int = Field(default=5, ge=1, le=20)
+    admin_lockout_seconds: int = Field(default=60, ge=1, le=3600)
     session_signing_key: SecretStr = SecretStr("")
     room_idle_seconds: int = Field(default=86_400, ge=60)
+    room_cleanup_interval_seconds: float = Field(default=30, gt=0, le=3600)
+    room_settlement_grace_seconds: float = Field(default=5, ge=0, le=300)
     host_transfer_seconds: int = Field(default=90, ge=10)
     max_room_players: int = Field(default=20, ge=2, le=20)
     recent_puzzle_window: int = Field(default=10, ge=0, le=100)

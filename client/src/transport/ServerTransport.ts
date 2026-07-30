@@ -79,10 +79,15 @@ export class ServerTransport implements Transport {
   }
 
   async createRoom(input: CreateRoomInput): Promise<AdmissionResponse> {
-    return this.request<AdmissionResponse>("/api/v1/rooms", {
-      method: "POST",
-      body: JSON.stringify(input),
-    });
+    return this.request<AdmissionResponse>(
+      "/api/v1/rooms",
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+      // AI rooms perform generation plus an independent quality review.
+      300_000,
+    );
   }
 
   async joinRoom(input: JoinRoomInput): Promise<AdmissionResponse> {
@@ -223,7 +228,7 @@ export class ServerTransport implements Transport {
     this.rejectWaiters(new TransportError("连接已关闭。", "DISCONNECTED"));
   }
 
-  private async request<T>(path: string, init: RequestInit): Promise<T> {
+  private async request<T>(path: string, init: RequestInit, timeoutMs = 8_000): Promise<T> {
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         ...init,
@@ -232,7 +237,7 @@ export class ServerTransport implements Transport {
           "X-Protocol-Version": String(PROTOCOL_VERSION),
           ...init.headers,
         },
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const body = (await response.json()) as unknown;
       if (!response.ok) {

@@ -40,7 +40,7 @@ async def receive_until(
     received: list[dict[str, Any]],
 ) -> dict[str, Any]:
     while True:
-        raw = await asyncio.wait_for(websocket.recv(), timeout=5)
+        raw = await asyncio.wait_for(websocket.recv(), timeout=90)
         event = json.loads(raw)
         if not isinstance(event, dict):
             raise TypeError("server event must be a JSON object")
@@ -53,7 +53,7 @@ async def run(base_url: str) -> None:
     headers = {"X-Protocol-Version": str(PROTOCOL_VERSION)}
     async with httpx.AsyncClient(
         base_url=base_url,
-        timeout=5,
+        timeout=130,
         trust_env=False,
     ) as client:
         health = await client.get("/health")
@@ -70,86 +70,151 @@ async def run(base_url: str) -> None:
         )
         created.raise_for_status()
         admission = created.json()
+        joined = await client.post(
+            "/api/v1/rooms/join",
+            headers=headers,
+            json={
+                "nickname": "第二客户端",
+                "inviteCode": admission["inviteCode"],
+                "clientInstanceId": f"smoke_{uuid.uuid4().hex}",
+            },
+        )
+        joined.raise_for_status()
+        guest_admission = joined.json()
 
     room_id = admission["roomId"]
-    session_token = admission["sessionToken"]
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
-    received: list[dict[str, Any]] = []
-    async with connect(
-        f"{ws_url}/api/v1/rooms/{room_id}/ws",
-        proxy=None,
-    ) as websocket:
-        await websocket.send(
+    host_received: list[dict[str, Any]] = []
+    guest_received: list[dict[str, Any]] = []
+    async with (
+        connect(
+            f"{ws_url}/api/v1/rooms/{room_id}/ws",
+            proxy=None,
+        ) as host_websocket,
+        connect(
+            f"{ws_url}/api/v1/rooms/{room_id}/ws",
+            proxy=None,
+        ) as guest_websocket,
+    ):
+        await host_websocket.send(
             command(
                 room_id=room_id,
-                session_token=session_token,
+                session_token=admission["sessionToken"],
                 command_type="session.hello",
-                payload={"lastEventId": 0, "clientVersion": "smoke"},
+                payload={"lastEventId": 0, "clientVersion": "smoke-host"},
             )
         )
-        await receive_until(websocket, "room.snapshot", received)
-
-        await websocket.send(
+        await guest_websocket.send(
             command(
                 room_id=room_id,
-                session_token=session_token,
+                session_token=guest_admission["sessionToken"],
+                command_type="session.hello",
+                payload={"lastEventId": 0, "clientVersion": "smoke-guest"},
+            )
+        )
+        host_snapshot = await receive_until(
+            host_websocket,
+            "room.snapshot",
+            host_received,
+        )
+        guest_snapshot = await receive_until(
+            guest_websocket,
+            "room.snapshot",
+            guest_received,
+        )
+        if len(host_snapshot["payload"]["players"]) != 2:
+            raise AssertionError("host snapshot did not contain both players")
+        if len(guest_snapshot["payload"]["players"]) != 2:
+            raise AssertionError("guest snapshot did not contain both players")
+
+        await host_websocket.send(
+            command(
+                room_id=room_id,
+                session_token=admission["sessionToken"],
                 command_type="room.start",
                 payload={},
             )
         )
-        await receive_until(websocket, "room.started", received)
+        await asyncio.gather(
+            receive_until(host_websocket, "room.started", host_received),
+            receive_until(guest_websocket, "room.started", guest_received),
+        )
 
-        await websocket.send(
+        await guest_websocket.send(
             command(
                 room_id=room_id,
-                session_token=session_token,
+                session_token=guest_admission["sessionToken"],
                 command_type="discussion.send",
-                payload={"content": "灯光看起来像是一种信号。"},
+                payload={"content": "第二客户端看到了一种可能的信号。"},
             )
         )
-        await receive_until(websocket, "discussion.created", received)
+        await asyncio.gather(
+            receive_until(host_websocket, "discussion.created", host_received),
+            receive_until(guest_websocket, "discussion.created", guest_received),
+        )
 
-        await websocket.send(
+        await host_websocket.send(
             command(
                 room_id=room_id,
-                session_token=session_token,
+                session_token=admission["sessionToken"],
                 command_type="question.submit",
                 payload={
                     "clientQuestionId": f"local_{uuid.uuid4().hex}",
-                    "content": "门缝里的灯光是在传递求救信号吗？",
+                    "content": "这个异常行为是当事人有意做出的吗？",
                 },
             )
         )
-        await receive_until(websocket, "question.answered", received)
+        await asyncio.gather(
+            receive_until(host_websocket, "question.answered", host_received),
+            receive_until(guest_websocket, "question.answered", guest_received),
+        )
 
-        before_settlement = json.dumps(received, ensure_ascii=False)
+        await guest_websocket.send(
+            command(
+                room_id=room_id,
+                session_token=guest_admission["sessionToken"],
+                command_type="hint.request",
+                payload={},
+            )
+        )
+        await asyncio.gather(
+            receive_until(host_websocket, "hint.created", host_received),
+            receive_until(guest_websocket, "hint.created", guest_received),
+        )
+
+        before_settlement = json.dumps(
+            [*host_received, *guest_received],
+            ensure_ascii=False,
+        )
         if '"truth"' in before_settlement or '"keyFacts"' in before_settlement:
             raise AssertionError("truth leaked before game.settled")
 
-        await websocket.send(
+        await host_websocket.send(
             command(
                 room_id=room_id,
-                session_token=session_token,
-                command_type="conclusion.submit",
-                payload={
-                    "content": (
-                        "室友被坏人挟持，用灯光闪烁求救。林夏故意假装钥匙丢了，骗过屋里的人后报警。"
-                    )
-                },
+                session_token=admission["sessionToken"],
+                command_type="conclusion.give_up",
+                payload={},
             )
         )
-        settled = await receive_until(websocket, "game.settled", received)
-        if not settled["payload"].get("truth"):
+        settled_events = await asyncio.gather(
+            receive_until(host_websocket, "game.settled", host_received),
+            receive_until(guest_websocket, "game.settled", guest_received),
+        )
+        if any(not event["payload"].get("truth") for event in settled_events):
             raise AssertionError("game.settled did not include the truth")
 
-    event_types = [str(event["type"]) for event in received]
+    event_types = [str(event["type"]) for event in host_received]
+    guest_event_types = [str(event["type"]) for event in guest_received]
     print(
         json.dumps(
             {
                 "status": "ok",
                 "health": health.json(),
                 "roomId": room_id,
-                "events": event_types,
+                "clients": 2,
+                "hostEvents": event_types,
+                "guestEvents": guest_event_types,
             },
             ensure_ascii=False,
         )

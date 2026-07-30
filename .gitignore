@@ -8,6 +8,7 @@ client/dist/
 client/src-tauri/target/
 client/.vite/
 server/.venv/
+server/data/
 **/.env
 !**/.env.example
 __pycache__/

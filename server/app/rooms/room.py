@@ -75,8 +75,10 @@ class Room:
         self.hint_count = 0
         self.settlement: dict[str, Any] | None = None
         self.created_at = now_ms()
+        self.last_activity_at = self.created_at
         self.started_at: int | None = None
         self.settled_at: int | None = None
+        self.closed_at: int | None = None
         self.event_sequence = 0
         self.recent_events: deque[ServerEvent] = deque(maxlen=EVENT_CACHE_SIZE)
         self.processed_command_events: dict[str, tuple[ServerEvent, ...]] = {}
@@ -195,6 +197,7 @@ class Room:
         last_event_id: int,
     ) -> tuple[ConnectionMailbox, list[ServerEvent]]:
         async with self.lock:
+            self.last_activity_at = now_ms()
             player = self.require_player(player_id)
             connection = ConnectionMailbox(
                 id=generate_id("connection"),
@@ -243,6 +246,7 @@ class Room:
 
     async def disconnect(self, connection_id: str) -> None:
         async with self.lock:
+            self.last_activity_at = now_ms()
             connection = self.connections.pop(connection_id, None)
             if connection is None:
                 return
@@ -310,6 +314,7 @@ class Room:
         close_connection = False
 
         async with self.lock:
+            self.last_activity_at = now_ms()
             self.require_player(player_id)
             duplicate_events = self.processed_command_events.get(command.command_id)
             if duplicate_events is not None:
@@ -346,6 +351,7 @@ class Room:
                         status_code=409,
                     )
                 self.stage = RoomStage.CLOSED
+                self.closed_at = now_ms()
                 if self.host_transfer_task is not None:
                     self.host_transfer_task.cancel()
                     self.host_transfer_task = None
@@ -717,6 +723,7 @@ class Room:
     def _settle(self, command_id: str, *, gave_up: bool) -> ServerEvent:
         self.stage = RoomStage.SETTLEMENT
         self.settled_at = now_ms()
+        self.last_activity_at = self.settled_at
         score = max(30, (56 if gave_up else 92) - self.hint_count * 7)
         grade = "S" if score >= 90 else "A" if score >= 80 else "B" if score >= 70 else "C"
         host = self.players.get(self.host_player_id)
@@ -761,6 +768,7 @@ class Room:
         ]
         if not self.players:
             self.stage = RoomStage.CLOSED
+            self.closed_at = now_ms()
             events.append(
                 self._new_event(
                     EventType.ROOM_CLOSED,
@@ -785,6 +793,19 @@ class Room:
                 )
             )
         return events
+
+    def cleanup_due(
+        self,
+        *,
+        current_time_ms: int,
+        idle_seconds: float,
+        terminal_grace_seconds: float,
+    ) -> bool:
+        terminal_at = self.closed_at or self.settled_at
+        if terminal_at is not None:
+            return current_time_ms >= terminal_at + int(terminal_grace_seconds * 1000)
+        all_offline = all(not player.online for player in self.players.values())
+        return all_offline and current_time_ms >= self.last_activity_at + int(idle_seconds * 1000)
 
     def _schedule_host_transfer(self, disconnected_host_id: str) -> None:
         if self.host_transfer_task is not None and not self.host_transfer_task.done():
