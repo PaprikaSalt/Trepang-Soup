@@ -41,7 +41,7 @@ VITE_TRANSPORT_MODE=server
 VITE_SERVER_URL=http://127.0.0.1:8787
 ```
 
-开发模式默认连接本机服务；正式构建默认连接 `http://ljy32.cn:8787`。如需切换服务器，
+开发模式默认连接本机服务；正式构建默认连接 `https://api.ljy32.cn`。如需切换服务器，
 设置 `VITE_SERVER_URL` 后重新构建客户端。需要离线查看界面时，可设置
 `VITE_TRANSPORT_MODE=mock`。
 
