@@ -6,6 +6,7 @@
 
 - `docs/Trepang Soup 项目规划.docx`：产品与实施规划
 - `docs/后端实施指南.md`：Ubuntu 24.04 / WSL 后端实施说明
+- `docs/公网部署清单.md`：公网迁移、验收、回滚与上线门槛
 - `docs/通信协议-v1.md`：HTTP 与 WebSocket 首版契约
 - `client/`：Tauri 2 + Vue 3 + TypeScript Windows 客户端
 - `server/`：可供客户端联调的 FastAPI HTTP/WebSocket 服务端
@@ -81,4 +82,5 @@ pnpm tauri build
 ```
 
 客户端传输结构见 `docs/客户端对接指南.md`，桌面构建说明见 `client/README.md`，版本变化
-见 `CHANGELOG.md`。
+见 `CHANGELOG.md`。公网迁移前按 `docs/公网部署清单.md` 完成环境、TLS、密钥、备份和
+端到端验收。
