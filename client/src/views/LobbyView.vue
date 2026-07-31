@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import AppHeader from "../components/AppHeader.vue";
 import PlayerAvatar from "../components/PlayerAvatar.vue";
 import { useGameStore } from "../stores/game";
+import type { RoomStage } from "../types/game";
 
 const router = useRouter();
 const game = useGameStore();
@@ -20,17 +21,21 @@ const sourceLabel = computed(() =>
 onMounted(async () => {
   try {
     await game.ensureRoom();
+    redirectForStage(game.stage);
   } catch {
     await router.push("/");
   }
 });
 
+function redirectForStage(value: RoomStage): void {
+  if (value === "playing") void router.replace(`/room/${game.roomCode}`);
+  else if (value === "settlement") void router.replace(`/settlement/${game.roomCode}`);
+  else if (value === "closed") void router.replace("/");
+}
+
 watch(
   () => game.stage,
-  (value) => {
-    if (value === "playing") void router.push(`/room/${game.roomCode}`);
-    if (value === "closed") void router.push("/");
-  },
+  redirectForStage,
 );
 
 async function copyCode(): Promise<void> {

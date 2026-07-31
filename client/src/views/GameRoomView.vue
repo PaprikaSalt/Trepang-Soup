@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import AppHeader from "../components/AppHeader.vue";
@@ -20,9 +20,6 @@ const hintLoading = ref(false);
 const conclusionLoading = ref(false);
 const conclusionFeedback = ref("");
 const feed = ref<HTMLElement | null>(null);
-
-const answeredCount = computed(() => game.questions.filter((question) => question.status === "answered").length);
-const clueProgress = computed(() => Math.min(86, 18 + answeredCount.value * 13 + game.hintCount * 8));
 
 onMounted(async () => {
   try {
@@ -171,16 +168,7 @@ function timelineKey(item: TimelineItem): string {
               }}
             </small>
           </div>
-          <h1>{{ game.puzzle.title }}</h1>
           <blockquote>{{ game.puzzle.surface }}</blockquote>
-          <div class="clue-meter">
-            <div class="clue-meter__label">
-              <span>推理进度</span>
-              <strong>{{ clueProgress }}%</strong>
-            </div>
-            <div class="clue-meter__track"><i :style="{ width: `${clueProgress}%` }"></i></div>
-            <small>AI预测</small>
-          </div>
         </section>
 
         <section class="members-panel">
@@ -199,7 +187,6 @@ function timelineKey(item: TimelineItem): string {
 
         <button class="conclusion-button" type="button" @click="conclusionOpen = true">
           <span>
-            <small>准备好还原真相了吗？</small>
             <strong>我们知道了</strong>
           </span>
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -344,7 +331,6 @@ function timelineKey(item: TimelineItem): string {
             <span class="hint-button__icon">?</span>
             <span>
               <strong>{{ hintLoading ? "主持人正在梳理……" : "我没招了" }}</strong>
-              <small>公共提示 · 每次评分 -7</small>
             </span>
           </button>
         </section>

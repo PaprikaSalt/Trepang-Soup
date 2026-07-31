@@ -11,6 +11,7 @@ import type {
   ProtocolPlayer,
   ProtocolPuzzleStyle,
   ProtocolQuestion,
+  ProtocolRematchState,
   ProtocolSettlement,
   RoomSnapshotPayload,
   ServerEvent,
@@ -24,6 +25,7 @@ import type {
   Player,
   Puzzle,
   Question,
+  RematchState,
   RoomConfig,
   RoomStage,
   Settlement,
@@ -124,13 +126,21 @@ function mapSettlement(settlement: ProtocolSettlement): Settlement {
   };
 }
 
+function mapRematch(value: ProtocolRematchState): RematchState {
+  return {
+    status: value.status,
+    eligiblePlayerIds: [...value.eligiblePlayerIds],
+    acceptedPlayerIds: [...value.acceptedPlayerIds],
+  };
+}
+
 function timelineFromEvent(
   eventId: number,
   eventType: EventType,
   createdAt: number,
   payload: Record<string, unknown>,
 ): TimelineItem | null {
-  if (eventType === "room.started") {
+  if (eventType === "room.started" || eventType === "room.restarted") {
     return {
       id: `event-${eventId}`,
       kind: "system",
@@ -208,6 +218,8 @@ export const useGameStore = defineStore("game", () => {
   const discussions = ref<DiscussionMessage[]>([]);
   const hintCount = ref(0);
   const settlement = ref<Settlement | null>(null);
+  const rematch = ref<RematchState | null>(null);
+  const roundNumber = ref(1);
   const processingQueue = ref(false);
   const history = ref<LocalHistoryEntry[]>(loadJson<LocalHistoryEntry[]>(HISTORY_KEY, []));
   const connectionStatus = ref<TransportStatus>(TRANSPORT_MODE === "mock" ? "connected" : "idle");
@@ -248,10 +260,10 @@ export const useGameStore = defineStore("game", () => {
     const labels: Record<TransportStatus, string> = {
       idle: "等待连接后端服务",
       checking: "正在检查后端服务",
-      available: "真实后端服务可用",
+      available: "游戏服务器已连接",
       connecting: "正在连接多人房间",
       reconnecting: "连接中断，正在自动恢复房间",
-      connected: "真实多人服务已连接",
+      connected: "游戏服务器已连接",
       disconnected: "与房间的连接已断开",
       error: "后端服务暂时不可用",
     };
@@ -368,8 +380,22 @@ export const useGameStore = defineStore("game", () => {
     discussions.value = [];
     hintCount.value = 0;
     settlement.value = null;
+    rematch.value = null;
+    roundNumber.value = 1;
     processingQueue.value = false;
     lastEventId.value = 0;
+    lastError.value = "";
+  }
+
+  function resetRoundState(): void {
+    roomRevision += 1;
+    questions.value = [];
+    timeline.value = [];
+    discussions.value = [];
+    hintCount.value = 0;
+    settlement.value = null;
+    rematch.value = null;
+    processingQueue.value = false;
     lastError.value = "";
   }
 
@@ -735,7 +761,73 @@ export const useGameStore = defineStore("game", () => {
       gaveUp,
     };
     stage.value = "settlement";
+    rematch.value = {
+      status: "voting",
+      eligiblePlayerIds: players.value.map((player) => player.id),
+      acceptedPlayerIds: [],
+    };
     persistCompletedGame();
+  }
+
+  async function voteRematch(agree: boolean): Promise<void> {
+    if (stage.value !== "settlement" || !rematch.value) return;
+    if (TRANSPORT_MODE === "server") {
+      await runCommand("rematch.vote", { agree }, ["rematch.updated"]);
+      return;
+    }
+
+    const accepted = new Set(rematch.value.acceptedPlayerIds);
+    if (agree) accepted.add(selfId.value);
+    else accepted.delete(selfId.value);
+    rematch.value = { ...rematch.value, acceptedPlayerIds: [...accepted] };
+    if (!agree) return;
+
+    // Mock mode lets the remaining demo players agree automatically so the
+    // complete settlement-to-next-round transition stays previewable.
+    await sleep(900);
+    if (!rematch.value?.acceptedPlayerIds.includes(selfId.value)) return;
+    rematch.value = {
+      ...rematch.value,
+      status: "generating",
+      acceptedPlayerIds: [...rematch.value.eligiblePlayerIds],
+    };
+    await sleep(1_000);
+    resetRoundState();
+    roundNumber.value += 1;
+    puzzle.value = { ...MOCK_PUZZLE, id: `${MOCK_PUZZLE.id}-${roundNumber.value}` };
+    stage.value = "playing";
+    timeline.value = [
+      {
+        id: id("system"),
+        kind: "system",
+        createdAt: Date.now(),
+        title: "新一轮推理开始",
+        content: "大家一致同意再来一碗，主持人已经换上了新的汤面。",
+      },
+    ];
+  }
+
+  async function leaveRoom(): Promise<void> {
+    try {
+      if (TRANSPORT_MODE === "server" && activeSession && stage.value !== "closed") {
+        await runCommand("room.leave", {}, ["player.left", "room.closed"]);
+      }
+    } catch {
+      // The server may already have expired a settled room; local cleanup must
+      // still complete so the user is never trapped on the result screen.
+    } finally {
+      // Leaving is a local terminal action even if the old room has already
+      // expired on the server.
+      cancelReconnect();
+      clearSession();
+      activeSession = null;
+      transport.disconnect();
+      resetRoom();
+      players.value = [];
+      roomCode.value = "";
+      roomId.value = "";
+      stage.value = "closed";
+    }
   }
 
   async function closeRoom(): Promise<void> {
@@ -796,6 +888,13 @@ export const useGameStore = defineStore("game", () => {
       const surface = event.payload.puzzleSurface as Puzzle | undefined;
       if (surface) puzzle.value = { ...surface, truth: "", keyFacts: [] };
       addTimeline(event);
+    } else if (event.type === "room.restarted") {
+      resetRoundState();
+      roundNumber.value = Number(event.payload.roundNumber || roundNumber.value + 1);
+      stage.value = "playing";
+      const surface = event.payload.puzzleSurface as Puzzle | undefined;
+      if (surface) puzzle.value = { ...surface, truth: "", keyFacts: [] };
+      addTimeline(event);
     } else if (event.type === "room.closed") {
       stage.value = "closed";
       clearSession();
@@ -850,6 +949,15 @@ export const useGameStore = defineStore("game", () => {
       addTimeline(event);
     } else if (event.type === "game.settled") {
       applySettlement(event.payload as unknown as ProtocolSettlement);
+    } else if (event.type === "rematch.updated" || event.type === "rematch.generating") {
+      rematch.value = mapRematch(event.payload as unknown as ProtocolRematchState);
+    } else if (event.type === "rematch.failed") {
+      const nextState = event.payload.rematch as ProtocolRematchState | undefined;
+      if (nextState) rematch.value = mapRematch(nextState);
+      else if (rematch.value) rematch.value = { ...rematch.value, status: "voting" };
+      const error = event.payload.error as Record<string, unknown> | undefined;
+      lastError.value =
+        typeof error?.message === "string" ? error.message : "下一局暂时没有准备好，请重新投票。";
     }
   }
 
@@ -870,6 +978,7 @@ export const useGameStore = defineStore("game", () => {
     questions.value = snapshot.questions.map(mapQuestion);
     discussions.value = snapshot.discussions.map(mapDiscussion);
     hintCount.value = snapshot.room.hintCount;
+    roundNumber.value = snapshot.room.roundNumber ?? 1;
     timeline.value = snapshot.timeline
       .map((item: SnapshotTimelineEntry) =>
         timelineFromEvent(item.eventId, item.type, item.createdAt, item.payload),
@@ -883,6 +992,7 @@ export const useGameStore = defineStore("game", () => {
       };
     }
     settlement.value = snapshot.settlement ? mapSettlement(snapshot.settlement) : null;
+    rematch.value = snapshot.rematch ? mapRematch(snapshot.rematch) : null;
     lastEventId.value = snapshot.lastEventId;
     updatePersistedEventId();
     if (snapshot.settlement) persistCompletedGame();
@@ -949,6 +1059,8 @@ export const useGameStore = defineStore("game", () => {
     discussions,
     hintCount,
     settlement,
+    rematch,
+    roundNumber,
     history,
     connectionStatus,
     connectionLabel,
@@ -971,6 +1083,8 @@ export const useGameStore = defineStore("game", () => {
     submitConclusion,
     giveUp,
     finishGame,
+    voteRematch,
+    leaveRoom,
     closeRoom,
     clearHistory,
   };

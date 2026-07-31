@@ -72,6 +72,12 @@ export interface Settlement {
   gaveUp: boolean;
 }
 
+export interface RematchState {
+  status: "voting" | "generating";
+  eligiblePlayerIds: string[];
+  acceptedPlayerIds: string[];
+}
+
 export interface LocalHistoryEntry {
   id: string;
   roomCode: string;

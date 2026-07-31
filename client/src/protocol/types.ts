@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 1 as const;
-export const CLIENT_VERSION = "1.0.0";
+export const CLIENT_VERSION = "1.1.0";
 
 export type ProtocolDifficulty = "beginner" | "standard" | "hard";
 export type ProtocolPuzzleStyle =
@@ -16,6 +16,7 @@ export type CommandType =
   | "room.close"
   | "room.kick"
   | "room.leave"
+  | "rematch.vote"
   | "discussion.send"
   | "question.submit"
   | "question.cancel"
@@ -30,6 +31,7 @@ export type EventType =
   | "session.rejected"
   | "room.snapshot"
   | "room.started"
+  | "room.restarted"
   | "room.closed"
   | "room.host_changed"
   | "player.joined"
@@ -48,7 +50,10 @@ export type EventType =
   | "conclusion.thinking"
   | "conclusion.close"
   | "conclusion.rejected"
-  | "game.settled";
+  | "game.settled"
+  | "rematch.updated"
+  | "rematch.generating"
+  | "rematch.failed";
 
 export interface AdmissionResponse {
   roomId: string;
@@ -113,6 +118,12 @@ export interface ProtocolSettlement {
   endedAt: number;
 }
 
+export interface ProtocolRematchState {
+  status: "voting" | "generating";
+  eligiblePlayerIds: string[];
+  acceptedPlayerIds: string[];
+}
+
 export interface SnapshotTimelineEntry {
   eventId: number;
   type: EventType;
@@ -130,6 +141,7 @@ export interface RoomSnapshotPayload {
     difficulty: ProtocolDifficulty | null;
     style: ProtocolPuzzleStyle | null;
     hintCount: number;
+    roundNumber?: number;
     createdAt: number;
     startedAt: number | null;
   };
@@ -147,6 +159,7 @@ export interface RoomSnapshotPayload {
   timeline: SnapshotTimelineEntry[];
   discussions: ProtocolDiscussion[];
   settlement?: ProtocolSettlement;
+  rematch?: ProtocolRematchState;
   lastEventId: number;
 }
 

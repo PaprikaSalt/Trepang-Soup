@@ -178,6 +178,43 @@ async def test_room_event_is_broadcast_to_two_connected_players() -> None:
         room.host_transfer_task.cancel()
 
 
+async def test_player_can_join_after_game_started_and_receive_playing_snapshot() -> None:
+    manager = RoomManager(Settings(app_env="test", _env_file=None))
+    room, host, _, _ = await manager.create_room(
+        nickname="房主",
+        source=PuzzleSource.AI,
+        difficulty=Difficulty.BEGINNER,
+        style=PuzzleStyle.CLASSIC_MYSTERY,
+    )
+    await room.execute_command(
+        host.id,
+        ClientCommand(
+            protocol_version=1,
+            command_id="cmd_start_before_join",
+            type=CommandType.ROOM_START,
+            room_id=room.id,
+            session_token="unused-direct-token",
+            client_time=1,
+            payload={},
+        ),
+    )
+
+    # Late admission must receive the authoritative playing snapshot immediately.
+    _, late_player, _, _ = await manager.join_room(
+        invite_code=room.invite_code,
+        nickname="迟到玩家",
+        client_instance_id="client-late-player",
+    )
+    mailbox, initial_events = await room.connect(late_player.id, 0)
+    snapshot = initial_events[0]
+
+    assert snapshot.type is EventType.ROOM_SNAPSHOT
+    assert snapshot.payload["room"]["stage"] == "playing"
+    assert snapshot.payload["puzzleSurface"]["surface"] == room.puzzle.surface
+    assert len(snapshot.payload["players"]) == 2
+    await room.disconnect(mailbox.id)
+
+
 async def test_cleanup_removes_idle_room_invite_and_sessions() -> None:
     manager = RoomManager(
         Settings(

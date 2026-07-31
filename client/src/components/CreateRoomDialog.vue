@@ -23,18 +23,9 @@ const form = reactive<RoomConfig & { nickname: string }>({
   style: "经典悬疑",
 });
 
-const difficulties: Array<{ value: Difficulty; hint: string }> = [
-  { value: "新手", hint: "线索集中" },
-  { value: "标准", hint: "需要串联" },
-  { value: "烧脑", hint: "多层因果" },
-];
-
-const styles: Array<{ value: PuzzleStyle; hint: string }> = [
-  { value: "轻松日常", hint: "巧合与误会" },
-  { value: "经典悬疑", hint: "适度紧张" },
-  { value: "暗黑惊悚", hint: "压迫与反转" },
-  { value: "荒诞幽默", hint: "离谱但合理" },
-];
+// 创建流程只保留必要选项名称，辅助说明不再占用按钮空间。
+const difficulties: Difficulty[] = ["新手", "标准", "烧脑"];
+const styles: PuzzleStyle[] = ["轻松日常", "经典悬疑", "暗黑惊悚", "荒诞幽默"];
 
 const canSubmit = computed(() => form.nickname.trim().length >= 1);
 
@@ -73,7 +64,6 @@ function submit(): void {
           >
             <span class="choice-icon choice-icon--spark">✦</span>
             <strong>AI 现场生成</strong>
-            <small>每次都是一碗新汤</small>
           </button>
           <button
             type="button"
@@ -87,7 +77,6 @@ function submit(): void {
               </svg>
             </span>
             <strong>私人题库</strong>
-            <small>避开最近出现的题目</small>
           </button>
         </div>
       </fieldset>
@@ -99,14 +88,13 @@ function submit(): void {
             <div class="chip-grid chip-grid--three">
               <button
                 v-for="item in difficulties"
-                :key="item.value"
+                :key="item"
                 type="button"
                 class="choice-chip"
-                :class="{ active: form.difficulty === item.value }"
-                @click="form.difficulty = item.value"
+                :class="{ active: form.difficulty === item }"
+                @click="form.difficulty = item"
               >
-                <strong>{{ item.value }}</strong>
-                <small>{{ item.hint }}</small>
+                <strong>{{ item }}</strong>
               </button>
             </div>
           </fieldset>
@@ -116,14 +104,13 @@ function submit(): void {
             <div class="chip-grid chip-grid--four">
               <button
                 v-for="item in styles"
-                :key="item.value"
+                :key="item"
                 type="button"
                 class="choice-chip"
-                :class="{ active: form.style === item.value }"
-                @click="form.style = item.value"
+                :class="{ active: form.style === item }"
+                @click="form.style = item"
               >
-                <strong>{{ item.value }}</strong>
-                <small>{{ item.hint }}</small>
+                <strong>{{ item }}</strong>
               </button>
             </div>
           </fieldset>
