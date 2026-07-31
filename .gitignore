@@ -11,6 +11,7 @@ server/.venv/
 server/data/
 **/.env
 !**/.env.example
+**/.API_KEY_DEV
 __pycache__/
 *.pyc
 .pytest_cache/

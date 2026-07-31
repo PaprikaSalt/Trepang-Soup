@@ -83,7 +83,27 @@ async def test_mocked_deepseek_drives_room_from_generation_to_settlement() -> No
         ),
     ]
 
-    async def handler(_: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        request_payload = json.loads(request.content)
+        user_payload = json.loads(request_payload["messages"][1]["content"])
+        if user_payload.get("task") == "review_completed_game":
+            player_id = user_payload["players"][0]["playerId"]
+            question_id = user_payload["answeredQuestions"][0]["questionId"]
+            return completion(
+                {
+                    "summary": "玩家通过灯光与伪装两条线索还原了完整真相。",
+                    "mvp": {"playerId": player_id, "reason": "持续推进了核心因果链。"},
+                    "bestMisdirection": {
+                        "playerId": player_id,
+                        "reason": "本局没有明显带偏方向。",
+                    },
+                    "mostValuableQuestion": {
+                        "questionId": question_id,
+                        "playerId": player_id,
+                        "reason": "确认灯光用途后显著缩小了范围。",
+                    },
+                }
+            )
         return responses.pop(0)
 
     mock_client = httpx.AsyncClient(
@@ -161,6 +181,12 @@ async def test_mocked_deepseek_drives_room_from_generation_to_settlement() -> No
         )
         await drain_background_tasks(manager, room_id)
         assert room.stage is RoomStage.SETTLEMENT
+        assert room.settlement is not None
+        assert [award["title"] for award in room.settlement["awards"]] == [
+            "MVP 玩家",
+            "最佳带偏奖",
+            "最有价值问题",
+        ]
         assert responses == []
     finally:
         await manager.shutdown()

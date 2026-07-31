@@ -22,6 +22,17 @@ export interface PuzzleWrite {
   active: boolean;
 }
 
+export interface PuzzleImportItem extends PuzzleWrite {
+  id: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface PuzzleImportFile {
+  schemaVersion: 1;
+  puzzles: PuzzleImportItem[];
+}
+
 interface PasswordKdf {
   name: "argon2id";
   salt: string;
@@ -49,6 +60,10 @@ interface AdminLoginResponse {
 interface PuzzleListResponse {
   items: LibraryPuzzle[];
   total: number;
+}
+
+interface PuzzleImportResponse {
+  imported: number;
 }
 
 export class AdminTransportError extends Error {
@@ -153,6 +168,20 @@ export class AdminTransport {
       `/api/v1/admin/puzzles/${encodeURIComponent(puzzleId)}`,
       { method: "DELETE" },
     );
+  }
+
+  async importPuzzles(
+    puzzles: PuzzleImportItem[],
+    mode: "upsert" | "replace" = "upsert",
+  ): Promise<number> {
+    const response = await this.authorizedRequest<PuzzleImportResponse>(
+      "/api/v1/admin/puzzles/import",
+      {
+        method: "POST",
+        body: JSON.stringify({ mode, puzzles }),
+      },
+    );
+    return response.imported;
   }
 
   clearSession(): void {

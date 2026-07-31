@@ -134,3 +134,16 @@ class ConclusionResult:
     result: str
     feedback: str = ""
     missing_facts: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class GameReviewAward:
+    title: str
+    recipient_player_id: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class GameReview:
+    summary: str
+    awards: tuple[GameReviewAward, ...]

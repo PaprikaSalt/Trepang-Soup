@@ -302,6 +302,9 @@ async def test_cleanup_keeps_settled_room_until_all_players_are_idle() -> None:
                 payload={},
             ),
         )
+        if command_type is CommandType.CONCLUSION_GIVE_UP:
+            while room.background_tasks:
+                await asyncio.gather(*tuple(room.background_tasks))
     assert room.settled_at is not None
 
     assert await manager.cleanup_once(current_time_ms=room.settled_at + 2_000) == 0
@@ -352,6 +355,9 @@ async def test_library_rematch_selects_another_recently_unused_puzzle() -> None:
                     payload=payload,
                 ),
             )
+            if command_type is CommandType.CONCLUSION_GIVE_UP:
+                while room.background_tasks:
+                    await asyncio.gather(*tuple(room.background_tasks))
         while room.background_tasks:
             await asyncio.gather(*tuple(room.background_tasks))
 

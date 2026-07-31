@@ -7,6 +7,8 @@ import {
   AdminTransportError,
   adminTransport,
   type LibraryPuzzle,
+  type PuzzleImportFile,
+  type PuzzleImportItem,
   type PuzzleWrite,
 } from "../transport/AdminTransport";
 
@@ -34,6 +36,14 @@ const deleting = ref(false);
 const editing = ref<PuzzleDraft | null>(null);
 const query = ref("");
 const items = ref<LibraryPuzzle[]>([]);
+const importInput = ref<HTMLInputElement | null>(null);
+const importOpen = ref(false);
+const importFileName = ref("");
+const importItems = ref<PuzzleImportItem[]>([]);
+const importMode = ref<"upsert" | "replace">("upsert");
+const importError = ref("");
+const importing = ref(false);
+const importSuccess = ref("");
 
 const filteredItems = computed(() => {
   const needle = query.value.trim();
@@ -71,6 +81,107 @@ function handleAdminError(error: unknown): string {
     deleteOpen.value = false;
   }
   return message;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseImportFile(text: string): PuzzleImportFile {
+  const document = JSON.parse(text) as unknown;
+  if (!isRecord(document) || document.schemaVersion !== 1 || !Array.isArray(document.puzzles)) {
+    throw new Error("文件必须包含 schemaVersion: 1 和 puzzles 数组。");
+  }
+  if (!document.puzzles.length || document.puzzles.length > 1_000) {
+    throw new Error("每个文件需要包含 1 至 1000 道题目。");
+  }
+
+  const ids = new Set<string>();
+  const puzzles = document.puzzles.map((raw, index): PuzzleImportItem => {
+    const label = `第 ${index + 1} 道题`;
+    if (!isRecord(raw)) throw new Error(`${label}不是 JSON 对象。`);
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    const title = typeof raw.title === "string" ? raw.title.trim() : "";
+    const surface = typeof raw.surface === "string" ? raw.surface.trim() : "";
+    const truth = typeof raw.truth === "string" ? raw.truth.trim() : "";
+    const keyFacts = Array.isArray(raw.keyFacts)
+      ? raw.keyFacts.map((fact) => (typeof fact === "string" ? fact.trim() : ""))
+      : [];
+
+    if (!/^puzzle_[A-Za-z0-9_-]{1,73}$/.test(id)) {
+      throw new Error(`${label}的 id 必须以 puzzle_ 开头，且只能包含字母、数字、下划线和连字符。`);
+    }
+    if (ids.has(id)) throw new Error(`${label}的 id 与文件内其他题目重复。`);
+    if (!title || title.length > 80) throw new Error(`${label}的标题长度必须为 1 至 80 个字符。`);
+    if (surface.length < 20 || surface.length > 800) {
+      throw new Error(`${label}的汤面长度必须为 20 至 800 个字符。`);
+    }
+    if (truth.length < 40 || truth.length > 2_000) {
+      throw new Error(`${label}的汤底长度必须为 40 至 2000 个字符。`);
+    }
+    if (keyFacts.length < 2 || keyFacts.length > 8 || keyFacts.some((fact) => !fact)) {
+      throw new Error(`${label}必须包含 2 至 8 条非空关键事实。`);
+    }
+    if (new Set(keyFacts).size !== keyFacts.length) {
+      throw new Error(`${label}的关键事实不能重复。`);
+    }
+    if (typeof raw.active !== "boolean") throw new Error(`${label}的 active 必须是布尔值。`);
+
+    const timestamps: Pick<PuzzleImportItem, "createdAt" | "updatedAt"> = {};
+    for (const field of ["createdAt", "updatedAt"] as const) {
+      const value = raw[field];
+      if (value !== undefined && (!Number.isInteger(value) || Number(value) < 0)) {
+        throw new Error(`${label}的 ${field} 必须是非负整数。`);
+      }
+      if (typeof value === "number") timestamps[field] = value;
+    }
+    ids.add(id);
+    return { id, title, surface, truth, keyFacts, active: raw.active, ...timestamps };
+  });
+  return { schemaVersion: 1, puzzles };
+}
+
+function openImportPicker(): void {
+  importError.value = "";
+  importSuccess.value = "";
+  if (importInput.value) importInput.value.value = "";
+  importInput.value?.click();
+}
+
+async function selectImportFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    const parsed = parseImportFile(await file.text());
+    importFileName.value = file.name;
+    importItems.value = parsed.puzzles;
+    importMode.value = "upsert";
+    importError.value = "";
+    importOpen.value = true;
+  } catch (error) {
+    importError.value = error instanceof SyntaxError ? "JSON 格式不正确，请检查逗号和引号。" : messageOf(error);
+  }
+}
+
+async function confirmImport(): Promise<void> {
+  if (importing.value || !importItems.value.length) return;
+  importing.value = true;
+  importError.value = "";
+  try {
+    const imported = await admin.importPuzzles(importItems.value, importMode.value);
+    items.value = await admin.listPuzzles();
+    importSuccess.value = `已成功导入 ${imported} 道题目。`;
+    importOpen.value = false;
+  } catch (error) {
+    importError.value = handleAdminError(error);
+  } finally {
+    importing.value = false;
+  }
+}
+
+function closeImport(): void {
+  if (!importing.value) importOpen.value = false;
 }
 
 async function unlock(): Promise<void> {
@@ -228,10 +339,22 @@ async function deleteItem(): Promise<void> {
             <h1>私人题库</h1>
             <p>只有你可以维护这些题目；房主开局时只能随机抽取。</p>
           </div>
-          <button class="primary-button" type="button" :disabled="libraryLoading" @click="openEditor()">
-            新增题目
-            <span>+</span>
-          </button>
+          <div class="library-heading-actions">
+            <input
+              ref="importInput"
+              class="visually-hidden"
+              type="file"
+              accept="application/json,.json"
+              @change="selectImportFile"
+            />
+            <button class="secondary-button" type="button" :disabled="libraryLoading" @click="openImportPicker">
+              批量导入 JSON
+            </button>
+            <button class="primary-button" type="button" :disabled="libraryLoading" @click="openEditor()">
+              新增题目
+              <span>+</span>
+            </button>
+          </div>
         </header>
 
         <div class="library-toolbar">
@@ -249,6 +372,8 @@ async function deleteItem(): Promise<void> {
           </div>
         </div>
 
+        <p v-if="importSuccess" class="library-state library-state--success">{{ importSuccess }}</p>
+        <p v-if="importError && !importOpen" class="library-state library-state--error">{{ importError }}</p>
         <p v-if="libraryError" class="library-state library-state--error">{{ libraryError }}</p>
         <div v-if="libraryLoading" class="library-state">
           <span class="button-spinner"></span>
@@ -277,6 +402,41 @@ async function deleteItem(): Promise<void> {
         </div>
       </template>
     </main>
+
+    <BaseModal
+      :open="importOpen"
+      eyebrow="IMPORT PUZZLES"
+      title="批量导入私人题库"
+      :description="`${importFileName} · ${importItems.length} 道题目已通过本地校验`"
+      @close="closeImport"
+    >
+      <div class="import-options">
+        <label :class="{ active: importMode === 'upsert' }">
+          <input v-model="importMode" type="radio" value="upsert" />
+          <span>
+            <strong>合并导入</strong>
+            <small>同 ID 题目更新，新 ID 题目新增，保留其他题目。</small>
+          </span>
+        </label>
+        <label :class="{ active: importMode === 'replace' }">
+          <input v-model="importMode" type="radio" value="replace" />
+          <span>
+            <strong>替换整个题库</strong>
+            <small>删除文件中未包含的旧题目，请谨慎使用。</small>
+          </span>
+        </label>
+      </div>
+      <p v-if="importError" class="form-error">{{ importError }}</p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" :disabled="importing" @click="importOpen = false">
+          取消
+        </button>
+        <button class="primary-button" type="button" :disabled="importing" @click="confirmImport">
+          <span v-if="importing" class="button-spinner"></span>
+          {{ importing ? "正在写入……" : `导入 ${importItems.length} 道题目` }}
+        </button>
+      </div>
+    </BaseModal>
 
     <BaseModal
       :open="editorOpen"

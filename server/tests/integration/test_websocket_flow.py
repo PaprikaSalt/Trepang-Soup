@@ -179,7 +179,7 @@ async def test_websocket_single_player_rematch_restarts_same_room() -> None:
                 token=token,
                 command_id="cmd_hello_rematch",
                 command_type="session.hello",
-                payload={"lastEventId": 0, "clientVersion": "1.1.0"},
+                payload={"lastEventId": 0, "clientVersion": "1.2.0"},
             ),
             wire_command(
                 room_id=room_id,
@@ -195,6 +195,25 @@ async def test_websocket_single_player_rematch_restarts_same_room() -> None:
                 command_type="conclusion.give_up",
                 payload={},
             ),
+        ],
+    )
+
+    await room_websocket(cast(WebSocket, websocket), room_id)
+    room = manager.rooms[room_id]
+    while room.background_tasks:
+        await asyncio.gather(*tuple(room.background_tasks))
+
+    # A real client only exposes rematch voting after receiving game.settled.
+    vote_websocket = FakeWebSocket(
+        application,
+        [
+            wire_command(
+                room_id=room_id,
+                token=token,
+                command_id="cmd_hello_vote",
+                command_type="session.hello",
+                payload={"lastEventId": room.event_sequence, "clientVersion": "1.2.0"},
+            ),
             wire_command(
                 room_id=room_id,
                 token=token,
@@ -204,10 +223,9 @@ async def test_websocket_single_player_rematch_restarts_same_room() -> None:
             ),
         ],
     )
+    await room_websocket(cast(WebSocket, vote_websocket), room_id)
 
-    await room_websocket(cast(WebSocket, websocket), room_id)
-
-    event_types = [event["type"] for event in websocket.sent]
+    event_types = [event["type"] for event in websocket.sent + vote_websocket.sent]
     assert "game.settled" in event_types
     assert "rematch.updated" in event_types
     assert "rematch.generating" in event_types

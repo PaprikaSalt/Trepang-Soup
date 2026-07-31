@@ -7,11 +7,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.ai.host import HostService
+from app.ai.host import DeterministicHostService, HostService
 from app.domain.errors import DomainError
 from app.domain.models import (
     Difficulty,
     Discussion,
+    GameReview,
     Player,
     PuzzleSource,
     PuzzleStyle,
@@ -101,6 +102,7 @@ class Room:
         self.host_transfer_seconds = host_transfer_seconds
         self.question_worker_task: asyncio.Task[None] | None = None
         self.conclusion_command_id: str | None = None
+        self.settlement_pending = False
         self.host_transfer_task: asyncio.Task[None] | None = None
         self.background_tasks: set[asyncio.Task[None]] = set()
 
@@ -363,6 +365,18 @@ class Room:
             if duplicate_events is not None:
                 return CommandOutcome(events=duplicate_events, duplicate=True)
 
+            # Freeze gameplay briefly while the AI prepares the final review and awards.
+            if self.settlement_pending and command.type not in {
+                CommandType.ROOM_CLOSE,
+                CommandType.ROOM_LEAVE,
+            }:
+                raise DomainError(
+                    ErrorCode.RATE_LIMITED,
+                    "主持人正在整理本局复盘。",
+                    status_code=429,
+                    retryable=True,
+                )
+
             events: list[ServerEvent] = []
             if command.type is CommandType.ROOM_START:
                 self._parse_payload(EmptyPayload, command.payload)
@@ -394,6 +408,7 @@ class Room:
                         status_code=409,
                     )
                 self.stage = RoomStage.CLOSED
+                self.settlement_pending = False
                 self.closed_at = now_ms()
                 self._cancel_rematch_generation()
                 if self.host_transfer_task is not None:
@@ -574,7 +589,28 @@ class Room:
             elif command.type is CommandType.CONCLUSION_GIVE_UP:
                 self.require_stage(RoomStage.PLAYING)
                 self._parse_payload(EmptyPayload, command.payload)
-                events.extend(self._settle(command.command_id, gave_up=True))
+                if self.conclusion_command_id is not None:
+                    raise DomainError(
+                        ErrorCode.RATE_LIMITED,
+                        "主持人正在整理另一份结案结果。",
+                        status_code=429,
+                        retryable=True,
+                    )
+                self.conclusion_command_id = command.command_id
+                self.settlement_pending = True
+                events.append(
+                    self._new_event(
+                        EventType.CONCLUSION_THINKING,
+                        {"playerId": player_id, "phase": "settlement"},
+                        command.command_id,
+                    )
+                )
+                async_job = (
+                    "settlement",
+                    command.command_id,
+                    self.round_number,
+                    self.puzzle,
+                )
             elif command.type is CommandType.REMATCH_VOTE:
                 payload = self._parse_payload(RematchVotePayload, command.payload)
                 self.require_stage(RoomStage.SETTLEMENT)
@@ -617,6 +653,15 @@ class Room:
         if async_job is not None:
             if async_job[0] == "hint":
                 self._spawn(self._complete_hint(async_job[1], async_job[2], async_job[3]))
+            elif async_job[0] == "settlement":
+                self._spawn(
+                    self._complete_settlement(
+                        async_job[1],
+                        async_job[2],
+                        async_job[3],
+                        gave_up=True,
+                    )
+                )
             else:
                 command_id, content = async_job[1].split("\0", maxsplit=1)
                 self._spawn(
@@ -804,6 +849,7 @@ class Room:
         puzzle: RuntimePuzzle,
     ) -> None:
         events: list[ServerEvent] = []
+        should_settle = False
         try:
             result = await self.host_service.evaluate_conclusion(puzzle, content)
         except Exception:
@@ -834,7 +880,8 @@ class Room:
                             )
                         )
                     elif result.result == "correct":
-                        events.extend(self._settle(command_id, gave_up=False))
+                        self.settlement_pending = True
+                        should_settle = True
                     elif result.result == "close":
                         events.append(
                             self._new_event(
@@ -854,40 +901,127 @@ class Room:
         async with self.lock:
             for event in events:
                 self._append_command_event(command_id, event)
+            if not should_settle and self.conclusion_command_id == command_id:
+                self.conclusion_command_id = None
+        await self.broadcast(*events)
+
+        if should_settle:
+            await self._complete_settlement(
+                command_id,
+                round_number,
+                puzzle,
+                gave_up=False,
+            )
+
+    async def _complete_settlement(
+        self,
+        command_id: str,
+        round_number: int,
+        puzzle: RuntimePuzzle,
+        *,
+        gave_up: bool,
+    ) -> None:
+        async with self.lock:
+            if (
+                round_number != self.round_number
+                or self.stage is not RoomStage.PLAYING
+                or not self.settlement_pending
+            ):
+                return
+            players = list(self.players.values())
+            questions = list(self.questions)
+            discussions = list(self.discussions)
+            hint_count = self.hint_count
+            participant_names = {player.id: player.nickname for player in players}
+
+        try:
+            review = await self.host_service.review_game(
+                puzzle,
+                players,
+                questions,
+                discussions,
+                hint_count,
+                gave_up,
+            )
+            self._validate_review(review, players)
+        except Exception:
+            # A failed or malformed AI review must never strand a completed game.
+            review = await DeterministicHostService().review_game(
+                puzzle,
+                players,
+                questions,
+                discussions,
+                hint_count,
+                gave_up,
+            )
+
+        async with self.lock:
+            if (
+                round_number != self.round_number
+                or self.stage is not RoomStage.PLAYING
+                or not self.settlement_pending
+            ):
+                return
+            events = self._settle(
+                command_id,
+                gave_up=gave_up,
+                review=review,
+                participant_names=participant_names,
+            )
+            for event in events:
+                self._append_command_event(command_id, event)
             if self.conclusion_command_id == command_id:
                 self.conclusion_command_id = None
         await self.broadcast(*events)
 
-    def _settle(self, command_id: str, *, gave_up: bool) -> list[ServerEvent]:
+    @staticmethod
+    def _validate_review(review: GameReview, players: list[Player]) -> None:
+        expected_titles = ("MVP 玩家", "最佳带偏奖", "最有价值问题")
+        player_ids = {player.id for player in players}
+        if (
+            not review.summary.strip()
+            or tuple(item.title for item in review.awards) != expected_titles
+        ):
+            raise ValueError("game review must contain the three required awards")
+        if any(
+            award.recipient_player_id not in player_ids or not award.reason.strip()
+            for award in review.awards
+        ):
+            raise ValueError("game review contains an invalid recipient or reason")
+
+    def _settle(
+        self,
+        command_id: str,
+        *,
+        gave_up: bool,
+        review: GameReview,
+        participant_names: dict[str, str],
+    ) -> list[ServerEvent]:
         self.stage = RoomStage.SETTLEMENT
         self.settled_at = now_ms()
         self.last_activity_at = self.settled_at
         score = max(30, (56 if gave_up else 92) - self.hint_count * 7)
         grade = "S" if score >= 90 else "A" if score >= 80 else "B" if score >= 70 else "C"
-        host = self.players.get(self.host_player_id)
-        recipient_name = host.nickname if host is not None else "本局玩家"
-        recipient_id = host.id if host is not None else self.host_player_id
         self.settlement = {
             "truth": self.puzzle.truth,
             "keyFacts": list(self.puzzle.key_facts),
             "score": score,
             "grade": grade,
             "gaveUp": gave_up,
-            "summary": (
-                "你们已经看清灯光、伪装和报警之间的完整因果链。"
-                if not gave_up
-                else "你们已经摸到真相边缘，汤底现在完整公布。"
-            ),
+            "summary": review.summary,
             "awards": [
                 {
-                    "title": "MVP 玩家",
-                    "recipientPlayerId": recipient_id,
-                    "recipientName": recipient_name,
-                    "reason": "带领大家持续推进了本局推理。",
+                    "title": award.title,
+                    "recipientPlayerId": award.recipient_player_id,
+                    # A participant may disconnect while the AI is writing the review.
+                    "recipientName": participant_names[award.recipient_player_id],
+                    "reason": award.reason,
                 }
+                for award in review.awards
             ],
             "endedAt": self.settled_at,
         }
+        self.settlement_pending = False
         self._initialize_rematch()
         return [
             self._new_event(
@@ -967,6 +1101,7 @@ class Room:
             self.rematch_accepted_player_ids.clear()
             self.rematch_generation_id = None
             self.conclusion_command_id = None
+            self.settlement_pending = False
             self.question_worker_task = None
             event = self._new_event(
                 EventType.ROOM_RESTARTED,

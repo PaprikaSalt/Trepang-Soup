@@ -1,4 +1,4 @@
-"""Exercise real DeepSeek generation, answer, hint, and conclusion JSON flows."""
+"""Exercise real DeepSeek generation, hosting, conclusion, and review JSON flows."""
 
 import argparse
 import asyncio
@@ -15,6 +15,8 @@ from app.config import Settings  # noqa: E402
 from app.domain.models import (  # noqa: E402
     AnswerType,
     Difficulty,
+    Discussion,
+    Player,
     PuzzleStyle,
     Question,
     QuestionStatus,
@@ -61,6 +63,38 @@ async def run(difficulty: Difficulty, style: PuzzleStyle) -> None:
         conclusion = await service.evaluate_conclusion(puzzle, puzzle.truth)
         if conclusion.result != "correct":
             raise AssertionError("the complete truth was not accepted as a correct conclusion")
+        players = [
+            Player(
+                id=f"player_smoke_{index}",
+                nickname=f"测试玩家{index}",
+                normalized_nickname=f"测试玩家{index}",
+                joined_at=index,
+            )
+            for index in range(6)
+        ]
+        review = await service.review_game(
+            puzzle,
+            players,
+            simulated_history,
+            [
+                Discussion(
+                    "discussion_smoke", players[1].id, players[1].nickname, "我支持这个方向。", 31
+                )
+            ],
+            1,
+            False,
+        )
+        if [award.title for award in review.awards] != [
+            "MVP 玩家",
+            "最佳带偏奖",
+            "最有价值问题",
+        ]:
+            raise AssertionError("game review did not return all required awards")
+        if any(
+            award.recipient_player_id not in {player.id for player in players}
+            for award in review.awards
+        ):
+            raise AssertionError("game review returned an unknown player")
     finally:
         await service.aclose()
 
@@ -76,6 +110,7 @@ async def run(difficulty: Difficulty, style: PuzzleStyle) -> None:
                 "simulatedHistoryCount": len(simulated_history),
                 "hintLength": len(hint),
                 "conclusion": conclusion.result,
+                "awards": [award.title for award in review.awards],
             },
             ensure_ascii=False,
         )

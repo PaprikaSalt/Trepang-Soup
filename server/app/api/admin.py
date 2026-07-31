@@ -109,7 +109,7 @@ class PuzzleImportItem(PuzzleWrite):
 
 class PuzzleImportRequest(ProtocolModel):
     mode: Literal["upsert", "replace"] = "upsert"
-    puzzles: list[PuzzleImportItem] = Field(max_length=1_000)
+    puzzles: list[PuzzleImportItem] = Field(min_length=1, max_length=1_000)
 
 
 class PuzzleImportResponse(ProtocolModel):
@@ -271,8 +271,9 @@ async def import_puzzles(
             truth=item.truth.strip(),
             key_facts=tuple(fact.strip() for fact in item.key_facts),
             active=item.active,
-            created_at=item.created_at or timestamp,
-            updated_at=item.updated_at or timestamp,
+            # Zero is a valid imported timestamp; only omitted values receive server time.
+            created_at=item.created_at if item.created_at is not None else timestamp,
+            updated_at=item.updated_at if item.updated_at is not None else timestamp,
         )
         for item in body.puzzles
     ]

@@ -2453,6 +2453,50 @@ svg {
   margin-right: auto;
 }
 
+.update-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.update-notes {
+  max-height: 150px;
+  margin: 0;
+  padding: 14px 16px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.update-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.update-progress > div {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.update-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--amber), var(--amber-light));
+  transition: width 180ms var(--ease-out-smooth);
+}
+
+.update-progress span {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
 /* Settlement */
 .page--settlement {
   overflow-y: auto;
@@ -2783,6 +2827,70 @@ svg {
   font-size: 10px;
 }
 
+.library-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.import-options {
+  display: grid;
+  gap: 10px;
+}
+
+.import-options label {
+  display: grid;
+  min-height: 68px;
+  padding: 13px 15px;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.02);
+  transition:
+    border-color 180ms var(--ease-out-smooth),
+    background 180ms var(--ease-out-smooth);
+}
+
+.import-options label.active {
+  border-color: rgba(215, 169, 91, 0.42);
+  background: var(--amber-soft);
+}
+
+.import-options input {
+  accent-color: var(--amber);
+}
+
+.import-options span {
+  display: grid;
+  gap: 5px;
+}
+
+.import-options strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.import-options small {
+  color: var(--text-muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
 .history-list,
 .library-list {
   display: flex;
@@ -3103,6 +3211,14 @@ svg {
   border-color: rgba(217, 131, 120, 0.22);
   color: #e5aaa1;
   background: rgba(111, 47, 42, 0.14);
+}
+
+.library-state--success {
+  justify-content: flex-start;
+  padding-inline: 17px;
+  border-color: rgba(102, 169, 137, 0.24);
+  color: #9ed2ba;
+  background: rgba(44, 92, 72, 0.14);
 }
 
 .library-empty {

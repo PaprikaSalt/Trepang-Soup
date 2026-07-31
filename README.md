@@ -57,6 +57,7 @@ cd client
 pnpm tauri build
 ```
 
-客户端传输结构见 `docs/客户端对接指南.md`，桌面构建说明见 `client/README.md`，版本变化
-见 `CHANGELOG.md`。公网迁移前按 `docs/公网部署清单.md` 完成环境、TLS、密钥、备份和
-端到端验收。
+客户端传输结构见 `docs/客户端对接指南.md`，桌面构建说明见 `client/README.md`，私人题库
+批量文件见 `docs/题库批量导入格式.md`，GitHub 在线更新发布步骤见
+`docs/GitHub在线更新发布流程.md`。版本变化见 `CHANGELOG.md`；公网部署前按
+`docs/公网部署清单.md` 完成环境、TLS、密钥、备份和端到端验收。

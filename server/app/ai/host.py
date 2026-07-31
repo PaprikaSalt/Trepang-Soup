@@ -5,7 +5,11 @@ from app.domain.models import (
     AnswerType,
     ConclusionResult,
     Difficulty,
+    Discussion,
+    GameReview,
+    GameReviewAward,
     HostAnswer,
+    Player,
     PuzzleStyle,
     Question,
     RuntimePuzzle,
@@ -33,6 +37,16 @@ class HostService(Protocol):
         puzzle: RuntimePuzzle,
         content: str,
     ) -> ConclusionResult: ...
+
+    async def review_game(
+        self,
+        puzzle: RuntimePuzzle,
+        players: list[Player],
+        questions: list[Question],
+        discussions: list[Discussion],
+        hint_count: int,
+        gave_up: bool,
+    ) -> GameReview: ...
 
 
 class PuzzleGenerator(Protocol):
@@ -123,4 +137,86 @@ class DeterministicHostService:
         return ConclusionResult(
             result="wrong",
             feedback="这套解释还没有覆盖灯光和她故意不进门的原因。",
+        )
+
+    async def review_game(
+        self,
+        puzzle: RuntimePuzzle,
+        players: list[Player],
+        questions: list[Question],
+        discussions: list[Discussion],
+        hint_count: int,
+        gave_up: bool,
+    ) -> GameReview:
+        del puzzle
+        if not players:
+            raise ValueError("game review requires at least one player")
+
+        # Positive answers reward progress; irrelevant/no answers identify the funniest detour.
+        progress_scores = {player.id: 0 for player in players}
+        detour_scores = {player.id: 0 for player in players}
+        for question in questions:
+            if question.answer_type is AnswerType.YES:
+                progress_scores[question.author_id] = progress_scores.get(question.author_id, 0) + 3
+            elif question.answer_type is AnswerType.PARTIAL:
+                progress_scores[question.author_id] = progress_scores.get(question.author_id, 0) + 2
+            elif question.answer_type in {AnswerType.NO, AnswerType.IRRELEVANT}:
+                detour_scores[question.author_id] = detour_scores.get(question.author_id, 0) + 1
+        for discussion in discussions:
+            progress_scores[discussion.author_id] = progress_scores.get(discussion.author_id, 0) + 1
+
+        order = {player.id: index for index, player in enumerate(players)}
+        mvp = max(players, key=lambda player: (progress_scores[player.id], -order[player.id]))
+        detour = max(players, key=lambda player: (detour_scores[player.id], order[player.id]))
+        valuable = max(
+            (question for question in questions if question.answer_type is not None),
+            key=lambda question: (
+                3
+                if question.answer_type is AnswerType.YES
+                else 2
+                if question.answer_type is AnswerType.PARTIAL
+                else 1,
+                -question.created_at,
+            ),
+            default=None,
+        )
+        valuable_player = (
+            next((player for player in players if player.id == valuable.author_id), mvp)
+            if valuable is not None
+            else mvp
+        )
+        summary = (
+            "大家在公布汤底前已经留下了清晰的推理轨迹，关键问题与讨论方向都被完整记录。"
+            if gave_up
+            else "大家把零散线索逐步连成了完整因果链，并在结案前抓住了决定性的异常行为。"
+        )
+        if hint_count:
+            summary += f" 本局共使用 {hint_count} 次公共提示。"
+        return GameReview(
+            summary=summary,
+            awards=(
+                GameReviewAward(
+                    title="MVP 玩家",
+                    recipient_player_id=mvp.id,
+                    reason="持续提出有效方向并推动了本局推理。",
+                ),
+                GameReviewAward(
+                    title="最佳带偏奖",
+                    recipient_player_id=detour.id,
+                    reason=(
+                        "贡献了本局最有戏剧性的错误方向。"
+                        if detour_scores[detour.id]
+                        else "本局几乎没有明显跑偏，只好把这份荣誉留给最会制造气氛的人。"
+                    ),
+                ),
+                GameReviewAward(
+                    title="最有价值问题",
+                    recipient_player_id=valuable_player.id,
+                    reason=(
+                        f"“{valuable.content}”最有效地缩小了真相范围。"
+                        if valuable is not None
+                        else "本局没有正式问题，这个席位记录了最接近关键方向的参与者。"
+                    ),
+                ),
+            ),
         )

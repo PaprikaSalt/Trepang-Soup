@@ -8,6 +8,8 @@ from app.config import Settings
 from app.domain.models import (
     AnswerType,
     Difficulty,
+    Discussion,
+    Player,
     PuzzleStyle,
     Question,
     QuestionStatus,
@@ -377,4 +379,93 @@ async def test_hint_rejects_verbatim_private_key_fact() -> None:
 
     with pytest.raises(AIServiceError, match="私密汤底事实"):
         await service.create_hint(puzzle(), [], 1)
+    await client.aclose()
+
+
+async def test_game_review_can_award_mvp_to_non_host_player() -> None:
+    players = [
+        Player("player_host", "房主", "房主", 1),
+        Player("player_guest", "小七", "小七", 2),
+    ]
+    questions = [
+        Question(
+            id="question_signal",
+            author_id="player_guest",
+            author_name="小七",
+            content="灯光是在发出求救信号吗？",
+            created_at=3,
+            status=QuestionStatus.ANSWERED,
+            answer_type=AnswerType.YES,
+            answer="是。",
+        )
+    ]
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return completion(
+            {
+                "summary": "大家从门缝灯光入手，逐步还原了伪装报警的因果链。",
+                "mvp": {"playerId": "player_guest", "reason": "提出了关键求救信号方向。"},
+                "bestMisdirection": {
+                    "playerId": "player_host",
+                    "reason": "提出了最有趣的错误方向。",
+                },
+                "mostValuableQuestion": {
+                    "questionId": "question_signal",
+                    "playerId": "player_guest",
+                    "reason": "这个问题直接确认了灯光的真实用途。",
+                },
+            }
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.deepseek.com",
+    )
+    service = DeepSeekService(settings(), client=client)
+
+    review = await service.review_game(
+        puzzle(),
+        players,
+        questions,
+        [Discussion("discussion_1", "player_host", "房主", "会不会只是停电？", 4)],
+        0,
+        False,
+    )
+
+    assert [award.title for award in review.awards] == [
+        "MVP 玩家",
+        "最佳带偏奖",
+        "最有价值问题",
+    ]
+    assert review.awards[0].recipient_player_id == "player_guest"
+    await client.aclose()
+
+
+async def test_game_review_rejects_unknown_award_recipient() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return completion(
+            {
+                "summary": "这是一段长度足够的测试复盘总结。",
+                "mvp": {"playerId": "player_missing", "reason": "不存在的玩家不应获奖。"},
+                "bestMisdirection": {
+                    "playerId": "player_host",
+                    "reason": "提出了最有趣的错误方向。",
+                },
+                "mostValuableQuestion": {
+                    "questionId": None,
+                    "playerId": "player_host",
+                    "reason": "本局没有正式问题。",
+                },
+            }
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.deepseek.com",
+    )
+    service = DeepSeekService(settings(), client=client)
+    players = [Player("player_host", "房主", "房主", 1)]
+
+    with pytest.raises(AIServiceError, match="不存在的获奖玩家"):
+        await service.review_game(puzzle(), players, [], [], 0, True)
     await client.aclose()

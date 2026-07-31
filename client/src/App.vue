@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { RouterView } from "vue-router";
+
+import UpdatePrompt from "./components/UpdatePrompt.vue";
 </script>
 
 <template>
@@ -13,5 +15,6 @@ import { RouterView } from "vue-router";
         <component :is="Component" :key="route.fullPath" />
       </Transition>
     </RouterView>
+    <UpdatePrompt />
   </div>
 </template>

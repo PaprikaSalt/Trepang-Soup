@@ -426,6 +426,40 @@ async def test_correct_conclusion_settles_and_reveals_truth() -> None:
     assert room.snapshot_payload(player_id)["settlement"]["truth"] == room.puzzle.truth
 
 
+async def test_settlement_uses_round_contributions_and_publishes_three_awards() -> None:
+    generator = SequencedPuzzleGenerator()
+    manager, room, host_id, guest_id = await create_multiplayer_room(generator)
+    try:
+        await room.execute_command(
+            guest_id,
+            command(
+                room,
+                "cmd_guest_key_question",
+                CommandType.QUESTION_SUBMIT,
+                {
+                    "clientQuestionId": "local_guest_key_question",
+                    "content": "灯光是在主动传递求救信号吗？",
+                },
+            ),
+        )
+        await wait_for_background_jobs(room)
+        await room.execute_command(
+            host_id,
+            command(room, "cmd_review_awards", CommandType.CONCLUSION_GIVE_UP),
+        )
+        await wait_for_background_jobs(room)
+
+        assert room.settlement is not None
+        assert [award["title"] for award in room.settlement["awards"]] == [
+            "MVP 玩家",
+            "最佳带偏奖",
+            "最有价值问题",
+        ]
+        assert room.settlement["awards"][0]["recipientPlayerId"] == guest_id
+    finally:
+        await manager.shutdown()
+
+
 async def test_unanimous_rematch_restarts_same_room_with_clean_round_state() -> None:
     generator = SequencedPuzzleGenerator()
     manager, room, host_id, guest_id = await create_multiplayer_room(generator)
@@ -464,18 +498,24 @@ async def test_unanimous_rematch_restarts_same_room_with_clean_round_state() -> 
             host_id,
             command(room, "cmd_settle_round_one", CommandType.CONCLUSION_GIVE_UP),
         )
+        await wait_for_background_jobs(room)
         assert [event.type for event in settled.events] == [
+            EventType.CONCLUSION_THINKING,
+        ]
+        settlement_events = room.processed_command_events["cmd_settle_round_one"]
+        assert [event.type for event in settlement_events] == [
+            EventType.CONCLUSION_THINKING,
             EventType.GAME_SETTLED,
             EventType.REMATCH_UPDATED,
         ]
-        assert settled.events[1].payload == {
+        assert settlement_events[-1].payload == {
             "status": "voting",
             "eligiblePlayerIds": [host_id, guest_id],
             "acceptedPlayerIds": [],
         }
         snapshot = room.snapshot_payload(host_id)
         assert snapshot["room"]["roundNumber"] == 1
-        assert snapshot["rematch"] == settled.events[1].payload
+        assert snapshot["rematch"] == settlement_events[-1].payload
 
         host_vote = command(
             room,
@@ -533,6 +573,7 @@ async def test_rematch_vote_can_be_withdrawn_and_membership_updates_eligibility(
             host_id,
             command(room, "cmd_settle_members", CommandType.CONCLUSION_GIVE_UP),
         )
+        await wait_for_background_jobs(room)
         await room.execute_command(
             host_id,
             command(
@@ -617,6 +658,7 @@ async def test_rematch_failure_returns_to_empty_vote_and_is_idempotent() -> None
             host.id,
             command(room, "cmd_settle_before_failure", CommandType.CONCLUSION_GIVE_UP),
         )
+        await wait_for_background_jobs(room)
         original_settlement = room.settlement
         vote = command(
             room,
@@ -670,6 +712,7 @@ async def test_generating_rejects_admission_and_close_discards_late_result() -> 
             host.id,
             command(room, "cmd_settle_before_block", CommandType.CONCLUSION_GIVE_UP),
         )
+        await wait_for_background_jobs(room)
         await room.execute_command(
             host.id,
             command(
@@ -727,6 +770,7 @@ async def test_player_leave_during_generation_does_not_cancel_rematch() -> None:
             host_id,
             command(room, "cmd_settle_before_leave", CommandType.CONCLUSION_GIVE_UP),
         )
+        await wait_for_background_jobs(room)
         await room.execute_command(
             host_id,
             command(
@@ -787,6 +831,9 @@ async def test_slow_hint_from_previous_round_cannot_pollute_restarted_round() ->
             host.id,
             command(room, "cmd_settle_with_slow_hint", CommandType.CONCLUSION_GIVE_UP),
         )
+        # The intentionally blocked hint remains active, so wait only for settlement.
+        while room.stage is RoomStage.PLAYING:
+            await asyncio.sleep(0)
         await room.execute_command(
             host.id,
             command(

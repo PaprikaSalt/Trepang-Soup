@@ -712,7 +712,7 @@ export const useGameStore = defineStore("game", () => {
         "conclusion.submit",
         { content: content.trim() },
         ["game.settled", "conclusion.close", "conclusion.rejected"],
-        35_000,
+        60_000,
       );
       return event.type === "game.settled"
         ? "correct"
@@ -735,7 +735,8 @@ export const useGameStore = defineStore("game", () => {
 
   async function giveUp(): Promise<void> {
     if (TRANSPORT_MODE === "server") {
-      await runCommand("conclusion.give_up", {}, ["game.settled"]);
+      // The server asks AI to review the full round before publishing all three awards.
+      await runCommand("conclusion.give_up", {}, ["game.settled"], 60_000);
       return;
     }
     finishGame(true);
@@ -755,6 +756,16 @@ export const useGameStore = defineStore("game", () => {
           title: "MVP 玩家",
           recipient: nickname.value,
           reason: "把伪装、求救信号和室友的危险处境连成了完整闭环。",
+        },
+        {
+          title: "最佳带偏奖",
+          recipient: nickname.value,
+          reason: "留下了本局最有戏剧性的错误方向。",
+        },
+        {
+          title: "最有价值问题",
+          recipient: nickname.value,
+          reason: "提出的问题最有效地缩小了真相范围。",
         },
       ],
       endedAt: Date.now(),

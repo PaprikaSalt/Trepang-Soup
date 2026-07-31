@@ -74,3 +74,24 @@ class ConclusionOutput(AIModel):
     result: Literal["correct", "close", "wrong"]
     matched_facts: list[str] = Field(default_factory=list, alias="matchedFacts")
     missing_facts: list[str] = Field(default_factory=list, alias="missingFacts")
+
+
+class PlayerAwardOutput(AIModel):
+    player_id: str = Field(alias="playerId", min_length=1, max_length=80)
+    reason: str = Field(min_length=4, max_length=180)
+
+
+class QuestionAwardOutput(PlayerAwardOutput):
+    question_id: str | None = Field(alias="questionId", max_length=80)
+
+
+class GameReviewOutput(AIModel):
+    summary: str = Field(min_length=8, max_length=300)
+    mvp: PlayerAwardOutput
+    best_misdirection: PlayerAwardOutput = Field(alias="bestMisdirection")
+    most_valuable_question: QuestionAwardOutput = Field(alias="mostValuableQuestion")
+
+    @field_validator("summary")
+    @classmethod
+    def strip_summary(cls, value: str) -> str:
+        return value.strip()
