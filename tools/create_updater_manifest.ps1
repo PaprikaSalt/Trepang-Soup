@@ -16,8 +16,9 @@ if (-not (Test-Path -LiteralPath $signaturePath -PathType Leaf)) {
     throw "Updater signature not found: $signaturePath"
 }
 
-# GitHub Releases serves the original asset directly, so no file server is required.
-$assetName = [Uri]::EscapeDataString([IO.Path]::GetFileName($resolvedInstaller.Path))
+# GitHub normalizes spaces and other unsupported asset-name characters to dots.
+$assetName = [IO.Path]::GetFileName($resolvedInstaller.Path) -replace '[^A-Za-z0-9._-]', '.'
+$assetName = [Uri]::EscapeDataString($assetName)
 $downloadUrl = "https://github.com/$Repository/releases/download/v$Version/$assetName"
 $manifest = [ordered]@{
     version = $Version
