@@ -1,3 +1,3 @@
 """Trepang Soup backend application."""
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "1.1.0"

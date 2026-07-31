@@ -10,6 +10,11 @@ class RoomStage(StrEnum):
     CLOSED = "closed"
 
 
+class RematchStatus(StrEnum):
+    VOTING = "voting"
+    GENERATING = "generating"
+
+
 class PuzzleSource(StrEnum):
     AI = "ai"
     LIBRARY = "library"

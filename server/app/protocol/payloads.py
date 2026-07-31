@@ -29,5 +29,9 @@ class PlayerTargetPayload(ProtocolModel):
     player_id: str = Field(min_length=1, max_length=80)
 
 
+class RematchVotePayload(ProtocolModel):
+    agree: bool = Field(strict=True)
+
+
 class ConclusionSubmitPayload(ProtocolModel):
     content: str = Field(min_length=1, max_length=800)

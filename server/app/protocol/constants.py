@@ -12,6 +12,7 @@ class CommandType(StrEnum):
     ROOM_CLOSE = "room.close"
     ROOM_KICK = "room.kick"
     ROOM_LEAVE = "room.leave"
+    REMATCH_VOTE = "rematch.vote"
     DISCUSSION_SEND = "discussion.send"
     QUESTION_SUBMIT = "question.submit"
     QUESTION_CANCEL = "question.cancel"
@@ -27,6 +28,7 @@ class EventType(StrEnum):
     SESSION_REJECTED = "session.rejected"
     ROOM_SNAPSHOT = "room.snapshot"
     ROOM_STARTED = "room.started"
+    ROOM_RESTARTED = "room.restarted"
     ROOM_CLOSED = "room.closed"
     ROOM_HOST_CHANGED = "room.host_changed"
     PLAYER_JOINED = "player.joined"
@@ -46,6 +48,9 @@ class EventType(StrEnum):
     CONCLUSION_CLOSE = "conclusion.close"
     CONCLUSION_REJECTED = "conclusion.rejected"
     GAME_SETTLED = "game.settled"
+    REMATCH_UPDATED = "rematch.updated"
+    REMATCH_GENERATING = "rematch.generating"
+    REMATCH_FAILED = "rematch.failed"
 
 
 class ErrorCode(StrEnum):
@@ -55,6 +60,7 @@ class ErrorCode(StrEnum):
     ROOM_FULL = "ROOM_FULL"
     NICKNAME_TAKEN = "NICKNAME_TAKEN"
     ROOM_CLOSING = "ROOM_CLOSING"
+    REMATCH_IN_PROGRESS = "REMATCH_IN_PROGRESS"
     NOT_HOST = "NOT_HOST"
     INVALID_ROOM_STAGE = "INVALID_ROOM_STAGE"
     QUESTION_NOT_FOUND = "QUESTION_NOT_FOUND"

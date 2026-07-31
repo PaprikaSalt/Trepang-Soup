@@ -167,3 +167,50 @@ async def test_websocket_replays_events_after_last_event_id() -> None:
 
     assert websocket.sent[0]["type"] == "discussion.created"
     assert all(event["type"] != "room.snapshot" for event in websocket.sent)
+
+
+async def test_websocket_single_player_rematch_restarts_same_room() -> None:
+    application, manager, room_id, _, token = await create_test_room()
+    websocket = FakeWebSocket(
+        application,
+        [
+            wire_command(
+                room_id=room_id,
+                token=token,
+                command_id="cmd_hello_rematch",
+                command_type="session.hello",
+                payload={"lastEventId": 0, "clientVersion": "1.1.0"},
+            ),
+            wire_command(
+                room_id=room_id,
+                token=token,
+                command_id="cmd_start_rematch",
+                command_type="room.start",
+                payload={},
+            ),
+            wire_command(
+                room_id=room_id,
+                token=token,
+                command_id="cmd_settle_rematch",
+                command_type="conclusion.give_up",
+                payload={},
+            ),
+            wire_command(
+                room_id=room_id,
+                token=token,
+                command_id="cmd_vote_rematch",
+                command_type="rematch.vote",
+                payload={"agree": True},
+            ),
+        ],
+    )
+
+    await room_websocket(cast(WebSocket, websocket), room_id)
+
+    event_types = [event["type"] for event in websocket.sent]
+    assert "game.settled" in event_types
+    assert "rematch.updated" in event_types
+    assert "rematch.generating" in event_types
+    assert "room.restarted" in event_types
+    assert manager.rooms[room_id].stage is RoomStage.PLAYING
+    assert manager.rooms[room_id].round_number == 2

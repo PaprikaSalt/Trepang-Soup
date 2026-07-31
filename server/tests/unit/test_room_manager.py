@@ -5,6 +5,7 @@ from app.ai.deepseek import AIServiceError
 from app.config import Settings
 from app.domain.errors import DomainError
 from app.domain.models import Difficulty, PuzzleSource, PuzzleStyle, RuntimePuzzle
+from app.library.repository import PuzzleRepository
 from app.protocol.constants import CommandType, EventType
 from app.protocol.models import ClientCommand
 from app.rooms.manager import RoomManager
@@ -270,10 +271,11 @@ async def test_cleanup_waits_for_terminal_event_grace() -> None:
     assert await manager.cleanup_once(current_time_ms=room.closed_at + 5_000) == 1
 
 
-async def test_cleanup_removes_settled_room_after_delivery_grace() -> None:
+async def test_cleanup_keeps_settled_room_until_all_players_are_idle() -> None:
     manager = RoomManager(
         Settings(
             app_env="test",
+            room_idle_seconds=60,
             room_settlement_grace_seconds=2,
             _env_file=None,
         )
@@ -302,5 +304,61 @@ async def test_cleanup_removes_settled_room_after_delivery_grace() -> None:
         )
     assert room.settled_at is not None
 
-    assert await manager.cleanup_once(current_time_ms=room.settled_at + 1_999) == 0
-    assert await manager.cleanup_once(current_time_ms=room.settled_at + 2_000) == 1
+    assert await manager.cleanup_once(current_time_ms=room.settled_at + 2_000) == 0
+    assert await manager.cleanup_once(current_time_ms=room.settled_at + 59_999) == 0
+    assert await manager.cleanup_once(current_time_ms=room.settled_at + 60_000) == 1
+
+
+async def test_library_rematch_selects_another_recently_unused_puzzle() -> None:
+    repository = PuzzleRepository(
+        "sqlite+aiosqlite:///:memory:",
+        recent_window=1,
+    )
+    await repository.initialize()
+    for index in (1, 2):
+        await repository.create_puzzle(
+            puzzle_id=f"library_round_{index}",
+            title=f"题目 {index}",
+            surface=f"这是私人题库中第 {index} 道用于续局测试的完整汤面。",
+            truth=f"这是私人题库中第 {index} 道用于续局测试的完整汤底。",
+            key_facts=(f"第 {index} 道事实一", f"第 {index} 道事实二"),
+        )
+    manager = RoomManager(
+        Settings(app_env="test", _env_file=None),
+        puzzle_repository=repository,
+    )
+    try:
+        room, host, _, _ = await manager.create_room(
+            nickname="房主",
+            source=PuzzleSource.LIBRARY,
+            difficulty=None,
+            style=None,
+        )
+        first_puzzle_id = room.puzzle.id
+        for command_id, command_type, payload in (
+            ("cmd_start_library", CommandType.ROOM_START, {}),
+            ("cmd_settle_library", CommandType.CONCLUSION_GIVE_UP, {}),
+            ("cmd_rematch_library", CommandType.REMATCH_VOTE, {"agree": True}),
+        ):
+            await room.execute_command(
+                host.id,
+                ClientCommand(
+                    protocol_version=1,
+                    command_id=command_id,
+                    type=command_type,
+                    room_id=room.id,
+                    session_token="unused-direct-token",
+                    client_time=1,
+                    payload=payload,
+                ),
+            )
+        while room.background_tasks:
+            await asyncio.gather(*tuple(room.background_tasks))
+
+        assert room.stage == "playing"
+        assert room.round_number == 2
+        assert room.puzzle.id != first_puzzle_id
+        assert await repository.selection_history() == [first_puzzle_id, room.puzzle.id]
+    finally:
+        await manager.shutdown()
+        await repository.close()

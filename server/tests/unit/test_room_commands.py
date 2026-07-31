@@ -3,6 +3,7 @@ import json
 from typing import Any
 
 import pytest
+from app.ai.deepseek import AIServiceError
 from app.ai.host import DeterministicHostService, HostService
 from app.config import Settings
 from app.domain.errors import DomainError
@@ -63,7 +64,86 @@ async def start_room(room: Room, player_id: str) -> None:
 
 async def wait_for_background_jobs(room: Room) -> None:
     while room.background_tasks:
-        await asyncio.gather(*tuple(room.background_tasks))
+        await asyncio.gather(*tuple(room.background_tasks), return_exceptions=True)
+
+
+class SequencedPuzzleGenerator:
+    def __init__(self, *, fail_on_call: int | None = None) -> None:
+        self.calls: list[tuple[Difficulty, PuzzleStyle]] = []
+        self.fail_on_call = fail_on_call
+
+    async def generate_puzzle(
+        self,
+        difficulty: Difficulty,
+        style: PuzzleStyle,
+    ) -> RuntimePuzzle:
+        self.calls.append((difficulty, style))
+        if len(self.calls) == self.fail_on_call:
+            raise AIServiceError("generation failed")
+        number = len(self.calls)
+        return RuntimePuzzle(
+            id=f"puzzle_round_{number}",
+            title=f"第 {number} 轮题目",
+            surface=f"这是第 {number} 轮的测试汤面，用于验证续局时题目会被完整替换。",
+            truth=f"这是第 {number} 轮的完整测试汤底，只能在本轮结算之后向玩家公开。",
+            key_facts=(f"第 {number} 轮事实一", f"第 {number} 轮事实二"),
+        )
+
+
+class BlockingRematchGenerator(SequencedPuzzleGenerator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rematch_started = asyncio.Event()
+        self.release_rematch = asyncio.Event()
+
+    async def generate_puzzle(
+        self,
+        difficulty: Difficulty,
+        style: PuzzleStyle,
+    ) -> RuntimePuzzle:
+        if self.calls:
+            self.rematch_started.set()
+            await self.release_rematch.wait()
+        return await super().generate_puzzle(difficulty, style)
+
+
+class BlockingHintHost(DeterministicHostService):
+    def __init__(self) -> None:
+        self.hint_started = asyncio.Event()
+        self.release_hint = asyncio.Event()
+
+    async def create_hint(
+        self,
+        puzzle: RuntimePuzzle,
+        answered_questions: list[Question],
+        hint_count: int,
+    ) -> str:
+        del puzzle, answered_questions, hint_count
+        self.hint_started.set()
+        await self.release_hint.wait()
+        return "这是一条来自上一轮的迟到提示。"
+
+
+async def create_multiplayer_room(
+    generator: SequencedPuzzleGenerator,
+) -> tuple[RoomManager, Room, str, str]:
+    manager = RoomManager(
+        Settings(app_env="test", _env_file=None),
+        puzzle_generator=generator,
+    )
+    room, host, _, _ = await manager.create_room(
+        nickname="海盐",
+        source=PuzzleSource.AI,
+        difficulty=Difficulty.BEGINNER,
+        style=PuzzleStyle.CLASSIC_MYSTERY,
+    )
+    _, guest, _, _ = await manager.join_room(
+        invite_code=room.invite_code,
+        nickname="小七",
+        client_instance_id="client-rematch-guest",
+    )
+    await start_room(room, host.id)
+    return manager, room, host.id, guest.id
 
 
 async def test_room_start_and_discussion_are_idempotent() -> None:
@@ -344,3 +424,394 @@ async def test_correct_conclusion_settles_and_reveals_truth() -> None:
     settled = next(event for event in room.recent_events if event.type is EventType.GAME_SETTLED)
     assert settled.payload["truth"] == room.puzzle.truth
     assert room.snapshot_payload(player_id)["settlement"]["truth"] == room.puzzle.truth
+
+
+async def test_unanimous_rematch_restarts_same_room_with_clean_round_state() -> None:
+    generator = SequencedPuzzleGenerator()
+    manager, room, host_id, guest_id = await create_multiplayer_room(generator)
+    original_room_id = room.id
+    original_invite_code = room.invite_code
+    original_player_ids = set(room.players)
+    try:
+        await room.execute_command(
+            host_id,
+            command(
+                room,
+                "cmd_old_discussion",
+                CommandType.DISCUSSION_SEND,
+                {"content": "这是上一轮讨论。"},
+            ),
+        )
+        await room.execute_command(
+            host_id,
+            command(
+                room,
+                "cmd_old_question",
+                CommandType.QUESTION_SUBMIT,
+                {
+                    "clientQuestionId": "local_old_question",
+                    "content": "灯光是信号吗？",
+                },
+            ),
+        )
+        await room.execute_command(
+            host_id,
+            command(room, "cmd_old_hint", CommandType.HINT_REQUEST),
+        )
+        await wait_for_background_jobs(room)
+
+        settled = await room.execute_command(
+            host_id,
+            command(room, "cmd_settle_round_one", CommandType.CONCLUSION_GIVE_UP),
+        )
+        assert [event.type for event in settled.events] == [
+            EventType.GAME_SETTLED,
+            EventType.REMATCH_UPDATED,
+        ]
+        assert settled.events[1].payload == {
+            "status": "voting",
+            "eligiblePlayerIds": [host_id, guest_id],
+            "acceptedPlayerIds": [],
+        }
+        snapshot = room.snapshot_payload(host_id)
+        assert snapshot["room"]["roundNumber"] == 1
+        assert snapshot["rematch"] == settled.events[1].payload
+
+        host_vote = command(
+            room,
+            "cmd_rematch_host",
+            CommandType.REMATCH_VOTE,
+            {"agree": True},
+        )
+        first_vote = await room.execute_command(host_id, host_vote)
+        duplicate_vote = await room.execute_command(host_id, host_vote)
+        assert [event.type for event in first_vote.events] == [EventType.REMATCH_UPDATED]
+        assert duplicate_vote.duplicate is True
+        assert len(generator.calls) == 1
+
+        final_vote = await room.execute_command(
+            guest_id,
+            command(
+                room,
+                "cmd_rematch_guest",
+                CommandType.REMATCH_VOTE,
+                {"agree": True},
+            ),
+        )
+        assert [event.type for event in final_vote.events] == [
+            EventType.REMATCH_UPDATED,
+            EventType.REMATCH_GENERATING,
+        ]
+        await wait_for_background_jobs(room)
+
+        assert room.id == original_room_id
+        assert room.invite_code == original_invite_code
+        assert set(room.players) == original_player_ids
+        assert room.stage is RoomStage.PLAYING
+        assert room.round_number == 2
+        assert room.puzzle.id == "puzzle_round_2"
+        assert len(generator.calls) == 2
+        assert room.questions == []
+        assert room.discussions == []
+        assert room.hint_count == 0
+        assert room.settlement is None
+        restarted_snapshot = room.snapshot_payload(host_id)
+        assert "settlement" not in restarted_snapshot
+        assert "rematch" not in restarted_snapshot
+        assert [item["type"] for item in restarted_snapshot["timeline"]] == [
+            EventType.ROOM_RESTARTED
+        ]
+    finally:
+        await manager.shutdown()
+
+
+async def test_rematch_vote_can_be_withdrawn_and_membership_updates_eligibility() -> None:
+    generator = SequencedPuzzleGenerator()
+    manager, room, host_id, guest_id = await create_multiplayer_room(generator)
+    try:
+        await room.execute_command(
+            host_id,
+            command(room, "cmd_settle_members", CommandType.CONCLUSION_GIVE_UP),
+        )
+        await room.execute_command(
+            host_id,
+            command(
+                room,
+                "cmd_vote_then_withdraw",
+                CommandType.REMATCH_VOTE,
+                {"agree": True},
+            ),
+        )
+        withdrawn = await room.execute_command(
+            host_id,
+            command(
+                room,
+                "cmd_withdraw_vote",
+                CommandType.REMATCH_VOTE,
+                {"agree": False},
+            ),
+        )
+        assert withdrawn.events[0].payload["acceptedPlayerIds"] == []
+
+        await room.execute_command(
+            host_id,
+            command(
+                room,
+                "cmd_vote_after_withdraw",
+                CommandType.REMATCH_VOTE,
+                {"agree": True},
+            ),
+        )
+        _, late_player, _, _ = await manager.join_room(
+            invite_code=room.invite_code,
+            nickname="迟到玩家",
+            client_instance_id="client-rematch-late-player",
+        )
+        assert room._rematch_payload() == {
+            "status": "voting",
+            "eligiblePlayerIds": [host_id, guest_id, late_player.id],
+            "acceptedPlayerIds": [host_id],
+        }
+
+        left = await room.execute_command(
+            late_player.id,
+            command(room, "cmd_late_leave", CommandType.ROOM_LEAVE),
+        )
+        assert [event.type for event in left.events] == [
+            EventType.PLAYER_LEFT,
+            EventType.REMATCH_UPDATED,
+        ]
+        assert left.events[-1].payload["eligiblePlayerIds"] == [host_id, guest_id]
+
+        await room.execute_command(
+            guest_id,
+            command(
+                room,
+                "cmd_vote_after_leave",
+                CommandType.REMATCH_VOTE,
+                {"agree": True},
+            ),
+        )
+        await wait_for_background_jobs(room)
+        assert room.stage is RoomStage.PLAYING
+        assert room.round_number == 2
+    finally:
+        await manager.shutdown()
+
+
+async def test_rematch_failure_returns_to_empty_vote_and_is_idempotent() -> None:
+    generator = SequencedPuzzleGenerator(fail_on_call=2)
+    manager = RoomManager(
+        Settings(app_env="test", _env_file=None),
+        puzzle_generator=generator,
+    )
+    room, host, _, _ = await manager.create_room(
+        nickname="海盐",
+        source=PuzzleSource.AI,
+        difficulty=Difficulty.HARD,
+        style=PuzzleStyle.DARK_THRILLER,
+    )
+    try:
+        await start_room(room, host.id)
+        await room.execute_command(
+            host.id,
+            command(room, "cmd_settle_before_failure", CommandType.CONCLUSION_GIVE_UP),
+        )
+        original_settlement = room.settlement
+        vote = command(
+            room,
+            "cmd_rematch_failure",
+            CommandType.REMATCH_VOTE,
+            {"agree": True},
+        )
+        await room.execute_command(host.id, vote)
+        await wait_for_background_jobs(room)
+
+        assert room.stage is RoomStage.SETTLEMENT
+        assert room.settlement is original_settlement
+        assert room.puzzle.id == "puzzle_round_1"
+        assert room._rematch_payload() == {
+            "status": "voting",
+            "eligiblePlayerIds": [host.id],
+            "acceptedPlayerIds": [],
+        }
+        failed = next(
+            event for event in room.recent_events if event.type is EventType.REMATCH_FAILED
+        )
+        assert failed.payload["error"]["code"] == "AI_TEMPORARILY_UNAVAILABLE"
+
+        duplicate = await room.execute_command(host.id, vote)
+        assert duplicate.duplicate is True
+        assert [event.type for event in duplicate.events] == [
+            EventType.REMATCH_UPDATED,
+            EventType.REMATCH_GENERATING,
+            EventType.REMATCH_FAILED,
+        ]
+        assert len(generator.calls) == 2
+    finally:
+        await manager.shutdown()
+
+
+async def test_generating_rejects_admission_and_close_discards_late_result() -> None:
+    generator = BlockingRematchGenerator()
+    manager = RoomManager(
+        Settings(app_env="test", _env_file=None),
+        puzzle_generator=generator,
+    )
+    room, host, _, _ = await manager.create_room(
+        nickname="海盐",
+        source=PuzzleSource.AI,
+        difficulty=Difficulty.BEGINNER,
+        style=PuzzleStyle.CLASSIC_MYSTERY,
+    )
+    try:
+        await start_room(room, host.id)
+        await room.execute_command(
+            host.id,
+            command(room, "cmd_settle_before_block", CommandType.CONCLUSION_GIVE_UP),
+        )
+        await room.execute_command(
+            host.id,
+            command(
+                room,
+                "cmd_start_blocked_rematch",
+                CommandType.REMATCH_VOTE,
+                {"agree": True},
+            ),
+        )
+        await generator.rematch_started.wait()
+
+        generating_snapshot = room.snapshot_payload(host.id)
+        assert generating_snapshot["rematch"]["status"] == "generating"
+        assert "settlement" in generating_snapshot
+
+        with pytest.raises(DomainError) as frozen_vote:
+            await room.execute_command(
+                host.id,
+                command(
+                    room,
+                    "cmd_vote_while_generating",
+                    CommandType.REMATCH_VOTE,
+                    {"agree": False},
+                ),
+            )
+        assert frozen_vote.value.code == "REMATCH_IN_PROGRESS"
+
+        with pytest.raises(DomainError) as failed_join:
+            await manager.join_room(
+                invite_code=room.invite_code,
+                nickname="生成中加入",
+                client_instance_id="client-generating-join",
+            )
+        assert failed_join.value.code == "REMATCH_IN_PROGRESS"
+
+        await room.execute_command(
+            host.id,
+            command(room, "cmd_close_during_rematch", CommandType.ROOM_CLOSE),
+        )
+        generator.release_rematch.set()
+        await wait_for_background_jobs(room)
+        assert room.stage is RoomStage.CLOSED
+        assert room.round_number == 1
+        assert not any(event.type is EventType.ROOM_RESTARTED for event in room.recent_events)
+    finally:
+        generator.release_rematch.set()
+        await manager.shutdown()
+
+
+async def test_player_leave_during_generation_does_not_cancel_rematch() -> None:
+    generator = BlockingRematchGenerator()
+    manager, room, host_id, guest_id = await create_multiplayer_room(generator)
+    try:
+        await room.execute_command(
+            host_id,
+            command(room, "cmd_settle_before_leave", CommandType.CONCLUSION_GIVE_UP),
+        )
+        await room.execute_command(
+            host_id,
+            command(
+                room,
+                "cmd_host_vote_before_leave",
+                CommandType.REMATCH_VOTE,
+                {"agree": True},
+            ),
+        )
+        await room.execute_command(
+            guest_id,
+            command(
+                room,
+                "cmd_guest_vote_before_leave",
+                CommandType.REMATCH_VOTE,
+                {"agree": True},
+            ),
+        )
+        await generator.rematch_started.wait()
+
+        await room.execute_command(
+            guest_id,
+            command(room, "cmd_leave_while_generating", CommandType.ROOM_LEAVE),
+        )
+        generator.release_rematch.set()
+        await wait_for_background_jobs(room)
+
+        assert room.stage is RoomStage.PLAYING
+        assert room.round_number == 2
+        assert set(room.players) == {host_id}
+    finally:
+        generator.release_rematch.set()
+        await manager.shutdown()
+
+
+async def test_slow_hint_from_previous_round_cannot_pollute_restarted_round() -> None:
+    generator = SequencedPuzzleGenerator()
+    host_service = BlockingHintHost()
+    manager = RoomManager(
+        Settings(app_env="test", _env_file=None),
+        host_service=host_service,
+        puzzle_generator=generator,
+    )
+    room, host, _, _ = await manager.create_room(
+        nickname="海盐",
+        source=PuzzleSource.AI,
+        difficulty=Difficulty.BEGINNER,
+        style=PuzzleStyle.CLASSIC_MYSTERY,
+    )
+    try:
+        await start_room(room, host.id)
+        await room.execute_command(
+            host.id,
+            command(room, "cmd_slow_old_hint", CommandType.HINT_REQUEST),
+        )
+        await host_service.hint_started.wait()
+        await room.execute_command(
+            host.id,
+            command(room, "cmd_settle_with_slow_hint", CommandType.CONCLUSION_GIVE_UP),
+        )
+        await room.execute_command(
+            host.id,
+            command(
+                room,
+                "cmd_rematch_with_slow_hint",
+                CommandType.REMATCH_VOTE,
+                {"agree": True},
+            ),
+        )
+        for _ in range(20):
+            if room.round_number == 2:
+                break
+            await asyncio.sleep(0)
+        assert room.round_number == 2
+
+        host_service.release_hint.set()
+        await wait_for_background_jobs(room)
+        restarted_event = next(
+            event for event in room.recent_events if event.type is EventType.ROOM_RESTARTED
+        )
+        assert room.hint_count == 0
+        assert not any(
+            event.type is EventType.HINT_CREATED and event.event_id > restarted_event.event_id
+            for event in room.recent_events
+        )
+    finally:
+        host_service.release_hint.set()
+        await manager.shutdown()

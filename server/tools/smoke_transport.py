@@ -204,6 +204,53 @@ async def run(base_url: str) -> None:
         if any(not event["payload"].get("truth") for event in settled_events):
             raise AssertionError("game.settled did not include the truth")
 
+        initial_votes = await asyncio.gather(
+            receive_until(host_websocket, "rematch.updated", host_received),
+            receive_until(guest_websocket, "rematch.updated", guest_received),
+        )
+        if any(len(event["payload"].get("eligiblePlayerIds", [])) != 2 for event in initial_votes):
+            raise AssertionError("rematch vote did not include both players")
+
+        await host_websocket.send(
+            command(
+                room_id=room_id,
+                session_token=admission["sessionToken"],
+                command_type="rematch.vote",
+                payload={"agree": True},
+            )
+        )
+        host_votes = await asyncio.gather(
+            receive_until(host_websocket, "rematch.updated", host_received),
+            receive_until(guest_websocket, "rematch.updated", guest_received),
+        )
+        if any(len(event["payload"].get("acceptedPlayerIds", [])) != 1 for event in host_votes):
+            raise AssertionError("first rematch vote was not synchronized")
+
+        await guest_websocket.send(
+            command(
+                room_id=room_id,
+                session_token=guest_admission["sessionToken"],
+                command_type="rematch.vote",
+                payload={"agree": True},
+            )
+        )
+        await asyncio.gather(
+            receive_until(host_websocket, "rematch.updated", host_received),
+            receive_until(guest_websocket, "rematch.updated", guest_received),
+        )
+        await asyncio.gather(
+            receive_until(host_websocket, "rematch.generating", host_received),
+            receive_until(guest_websocket, "rematch.generating", guest_received),
+        )
+        restarted_events = await asyncio.gather(
+            receive_until(host_websocket, "room.restarted", host_received),
+            receive_until(guest_websocket, "room.restarted", guest_received),
+        )
+        if any(event["payload"].get("roundNumber") != 2 for event in restarted_events):
+            raise AssertionError("rematch did not advance to round two")
+        if any(event["roomId"] != room_id for event in restarted_events):
+            raise AssertionError("rematch unexpectedly changed the room")
+
     event_types = [str(event["type"]) for event in host_received]
     guest_event_types = [str(event["type"]) for event in guest_received]
     print(

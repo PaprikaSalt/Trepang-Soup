@@ -16,6 +16,9 @@ from app.domain.models import (
     Player,
     PuzzleSource,
     PuzzleStyle,
+    RematchStatus,
+    RoomStage,
+    RuntimePuzzle,
     Session,
 )
 from app.library.repository import PuzzleLibraryEmptyError, PuzzleRepository
@@ -95,37 +98,7 @@ class RoomManager:
     ) -> tuple[Room, Player, str, Session]:
         display_name, normalized_name = normalize_nickname(nickname)
         self._validate_nickname(display_name)
-        if source is PuzzleSource.AI:
-            if difficulty is None or style is None:
-                raise DomainError(
-                    ErrorCode.VALIDATION_ERROR,
-                    "AI 房间必须指定难度和风格。",
-                    status_code=422,
-                )
-            try:
-                puzzle = await self.puzzle_generator.generate_puzzle(difficulty, style)
-            except AIServiceError as exc:
-                raise DomainError(
-                    ErrorCode.AI_TEMPORARILY_UNAVAILABLE,
-                    "主持人暂时无法生成新题目，请稍后重试。",
-                    status_code=503,
-                    retryable=exc.retryable,
-                ) from exc
-        else:
-            if self.puzzle_repository is None:
-                raise DomainError(
-                    ErrorCode.PUZZLE_LIBRARY_EMPTY,
-                    "服务端尚未启用私人题库。",
-                    status_code=503,
-                )
-            try:
-                puzzle = (await self.puzzle_repository.select_puzzle()).to_runtime()
-            except PuzzleLibraryEmptyError as exc:
-                raise DomainError(
-                    ErrorCode.PUZZLE_LIBRARY_EMPTY,
-                    "私人题库中没有可用题目。",
-                    status_code=409,
-                ) from exc
+        puzzle = await self._load_puzzle(source, difficulty, style)
         async with self.lock:
             room_id = generate_id("room")
             invite_code = self._unique_invite_code()
@@ -144,6 +117,7 @@ class RoomManager:
                 host_player=player,
                 puzzle=puzzle,
                 host_service=self.host_service,
+                next_puzzle_provider=lambda: self._load_puzzle(source, difficulty, style),
                 host_transfer_seconds=self.settings.host_transfer_seconds,
             )
             self.rooms[room_id] = room
@@ -171,6 +145,18 @@ class RoomManager:
                     status_code=404,
                 )
             async with room.lock:
+                if room.stage is RoomStage.CLOSED:
+                    raise DomainError(
+                        ErrorCode.ROOM_CLOSING,
+                        "房间正在关闭。",
+                        status_code=409,
+                    )
+                if room.rematch_status is RematchStatus.GENERATING:
+                    raise DomainError(
+                        ErrorCode.REMATCH_IN_PROGRESS,
+                        "下一局正在准备中，请稍后再加入。",
+                        status_code=409,
+                    )
                 if len(room.players) >= self.settings.max_room_players:
                     raise DomainError(ErrorCode.ROOM_FULL, "房间已经坐满了。", status_code=409)
                 if any(
@@ -188,17 +174,65 @@ class RoomManager:
                     joined_at=now_ms(),
                 )
                 room.players[player.id] = player
-                event = room._new_event(
-                    event_type=EventType.PLAYER_JOINED,
-                    payload={"player": room.player_public_dict(player)},
-                )
+                room.last_activity_at = now_ms()
+                events = [
+                    room._new_event(
+                        event_type=EventType.PLAYER_JOINED,
+                        payload={"player": room.player_public_dict(player)},
+                    )
+                ]
+                if room.rematch_status is RematchStatus.VOTING:
+                    room.rematch_eligible_player_ids.add(player.id)
+                    events.append(
+                        room._new_event(
+                            event_type=EventType.REMATCH_UPDATED,
+                            payload=room._rematch_payload(),
+                        )
+                    )
             token, session = self._issue_session(
                 room.id,
                 player.id,
                 client_instance_id,
             )
-        await room.broadcast(event)
+        await room.broadcast(*events)
         return room, player, token, session
+
+    async def _load_puzzle(
+        self,
+        source: PuzzleSource,
+        difficulty: Difficulty | None,
+        style: PuzzleStyle | None,
+    ) -> RuntimePuzzle:
+        if source is PuzzleSource.AI:
+            if difficulty is None or style is None:
+                raise DomainError(
+                    ErrorCode.VALIDATION_ERROR,
+                    "AI 房间必须指定难度和风格。",
+                    status_code=422,
+                )
+            try:
+                return await self.puzzle_generator.generate_puzzle(difficulty, style)
+            except AIServiceError as exc:
+                raise DomainError(
+                    ErrorCode.AI_TEMPORARILY_UNAVAILABLE,
+                    "主持人暂时无法生成新题目，请稍后重试。",
+                    status_code=503,
+                    retryable=exc.retryable,
+                ) from exc
+        if self.puzzle_repository is None:
+            raise DomainError(
+                ErrorCode.PUZZLE_LIBRARY_EMPTY,
+                "服务端尚未启用私人题库。",
+                status_code=503,
+            )
+        try:
+            return (await self.puzzle_repository.select_puzzle()).to_runtime()
+        except PuzzleLibraryEmptyError as exc:
+            raise DomainError(
+                ErrorCode.PUZZLE_LIBRARY_EMPTY,
+                "私人题库中没有可用题目。",
+                status_code=409,
+            ) from exc
 
     async def authenticate(self, room_id: str, token: str) -> tuple[Room, Session]:
         token_hash = hash_session_token(token)

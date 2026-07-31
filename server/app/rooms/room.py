@@ -1,5 +1,6 @@
 import asyncio
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from time import time
 from typing import Any
@@ -16,6 +17,7 @@ from app.domain.models import (
     PuzzleStyle,
     Question,
     QuestionStatus,
+    RematchStatus,
     RoomStage,
     RuntimePuzzle,
 )
@@ -28,12 +30,14 @@ from app.protocol.payloads import (
     PlayerTargetPayload,
     QuestionCancelPayload,
     QuestionSubmitPayload,
+    RematchVotePayload,
 )
 from app.protocol.validation import public_validation_errors
 from app.rooms.mailbox import ConnectionMailbox
 from app.security.sessions import generate_id
 
 EVENT_CACHE_SIZE = 500
+NextPuzzleProvider = Callable[[], Awaitable[RuntimePuzzle]]
 
 
 def now_ms() -> int:
@@ -59,6 +63,7 @@ class Room:
         host_player: Player,
         puzzle: RuntimePuzzle,
         host_service: HostService,
+        next_puzzle_provider: NextPuzzleProvider,
         host_transfer_seconds: float,
     ) -> None:
         self.id = room_id
@@ -73,7 +78,14 @@ class Room:
         self.questions: list[Question] = []
         self.discussions: list[Discussion] = []
         self.hint_count = 0
+        self.round_number = 1
+        self.round_event_start_id = 0
         self.settlement: dict[str, Any] | None = None
+        self.rematch_status: RematchStatus | None = None
+        self.rematch_eligible_player_ids: set[str] = set()
+        self.rematch_accepted_player_ids: set[str] = set()
+        self.rematch_generation_id: str | None = None
+        self.rematch_task: asyncio.Task[None] | None = None
         self.created_at = now_ms()
         self.last_activity_at = self.created_at
         self.started_at: int | None = None
@@ -85,6 +97,7 @@ class Room:
         self.connections: dict[str, ConnectionMailbox] = {}
         self.lock = asyncio.Lock()
         self.host_service = host_service
+        self.next_puzzle_provider = next_puzzle_provider
         self.host_transfer_seconds = host_transfer_seconds
         self.question_worker_task: asyncio.Task[None] | None = None
         self.conclusion_command_id: str | None = None
@@ -142,6 +155,42 @@ class Room:
             "joinedAt": player.joined_at,
         }
 
+    def _rematch_payload(self) -> dict[str, Any]:
+        eligible = [
+            player_id for player_id in self.players if player_id in self.rematch_eligible_player_ids
+        ]
+        accepted = [
+            player_id for player_id in eligible if player_id in self.rematch_accepted_player_ids
+        ]
+        return {
+            "status": self.rematch_status,
+            "eligiblePlayerIds": eligible,
+            "acceptedPlayerIds": accepted,
+        }
+
+    def _initialize_rematch(self) -> None:
+        self.rematch_status = RematchStatus.VOTING
+        self.rematch_eligible_player_ids = set(self.players)
+        self.rematch_accepted_player_ids.clear()
+        self.rematch_generation_id = None
+
+    def _maybe_begin_rematch(self, command_id: str | None) -> ServerEvent | None:
+        if (
+            self.stage is not RoomStage.SETTLEMENT
+            or self.rematch_status is not RematchStatus.VOTING
+            or not self.rematch_eligible_player_ids
+            or self.rematch_accepted_player_ids != self.rematch_eligible_player_ids
+        ):
+            return None
+        self.rematch_status = RematchStatus.GENERATING
+        self.rematch_generation_id = generate_id("rematch")
+        self.last_activity_at = now_ms()
+        return self._new_event(
+            EventType.REMATCH_GENERATING,
+            self._rematch_payload(),
+            command_id,
+        )
+
     def snapshot_payload(self, player_id: str) -> dict[str, Any]:
         player = self.players[player_id]
         snapshot: dict[str, Any] = {
@@ -154,6 +203,7 @@ class Room:
                 "difficulty": self.difficulty,
                 "style": self.style,
                 "hintCount": self.hint_count,
+                "roundNumber": self.round_number,
                 "createdAt": self.created_at,
                 "startedAt": self.started_at,
             },
@@ -175,9 +225,11 @@ class Room:
                     "payload": event.payload,
                 }
                 for event in self.recent_events
-                if event.type
+                if event.event_id >= self.round_event_start_id
+                and event.type
                 in {
                     EventType.ROOM_STARTED,
+                    EventType.ROOM_RESTARTED,
                     EventType.QUESTION_ANSWERED,
                     EventType.HINT_CREATED,
                     EventType.CONCLUSION_CLOSE,
@@ -187,8 +239,10 @@ class Room:
             "discussions": [item.public_dict() for item in self.discussions],
             "lastEventId": self.event_sequence,
         }
-        if self.settlement is not None:
+        if self.stage is RoomStage.SETTLEMENT and self.settlement is not None:
             snapshot["settlement"] = self.settlement
+        if self.stage is RoomStage.SETTLEMENT and self.rematch_status is not None:
+            snapshot["rematch"] = self._rematch_payload()
         return snapshot
 
     async def connect(
@@ -292,25 +346,14 @@ class Room:
                 details={"expected": expected, "actual": self.stage},
             )
 
-    async def add_player(self, player: Player) -> ServerEvent:
-        async with self.lock:
-            if self.stage is RoomStage.CLOSED:
-                raise DomainError(ErrorCode.ROOM_CLOSING, "房间正在关闭。", status_code=409)
-            self.players[player.id] = player
-            event = self._new_event(
-                EventType.PLAYER_JOINED,
-                {"player": self.player_public_dict(player)},
-            )
-        await self.broadcast(event)
-        return event
-
     async def execute_command(
         self,
         player_id: str,
         command: ClientCommand,
     ) -> CommandOutcome:
         start_question_worker = False
-        async_job: tuple[str, str] | None = None
+        async_job: tuple[str, str, int, RuntimePuzzle] | None = None
+        rematch_job: tuple[str, int, str] | None = None
         close_connection = False
 
         async with self.lock:
@@ -327,20 +370,20 @@ class Room:
                 self.require_stage(RoomStage.LOBBY)
                 self.stage = RoomStage.PLAYING
                 self.started_at = now_ms()
-                events.append(
-                    self._new_event(
-                        EventType.ROOM_STARTED,
-                        {
-                            "startedAt": self.started_at,
-                            "puzzleSurface": {
-                                "id": self.puzzle.id,
-                                "title": self.puzzle.title,
-                                "surface": self.puzzle.surface,
-                            },
+                started_event = self._new_event(
+                    EventType.ROOM_STARTED,
+                    {
+                        "startedAt": self.started_at,
+                        "puzzleSurface": {
+                            "id": self.puzzle.id,
+                            "title": self.puzzle.title,
+                            "surface": self.puzzle.surface,
                         },
-                        command.command_id,
-                    )
+                    },
+                    command.command_id,
                 )
+                self.round_event_start_id = started_event.event_id
+                events.append(started_event)
             elif command.type is CommandType.ROOM_CLOSE:
                 self._parse_payload(EmptyPayload, command.payload)
                 self.require_host(player_id)
@@ -352,6 +395,7 @@ class Room:
                     )
                 self.stage = RoomStage.CLOSED
                 self.closed_at = now_ms()
+                self._cancel_rematch_generation()
                 if self.host_transfer_task is not None:
                     self.host_transfer_task.cancel()
                     self.host_transfer_task = None
@@ -377,6 +421,8 @@ class Room:
                     )
                 target = self.require_player(payload.player_id)
                 del self.players[target.id]
+                self.rematch_eligible_player_ids.discard(target.id)
+                self.rematch_accepted_player_ids.discard(target.id)
                 events.append(
                     self._new_event(
                         EventType.PLAYER_KICKED,
@@ -384,6 +430,17 @@ class Room:
                         command.command_id,
                     )
                 )
+                if self.rematch_status is RematchStatus.VOTING:
+                    events.append(
+                        self._new_event(
+                            EventType.REMATCH_UPDATED,
+                            self._rematch_payload(),
+                            command.command_id,
+                        )
+                    )
+                    generating = self._maybe_begin_rematch(command.command_id)
+                    if generating is not None:
+                        events.append(generating)
             elif command.type is CommandType.DISCUSSION_SEND:
                 self.require_stage(RoomStage.PLAYING)
                 payload = self._parse_payload(DiscussionSendPayload, command.payload)
@@ -473,7 +530,7 @@ class Room:
                         command.command_id,
                     )
                 )
-                async_job = ("hint", command.command_id)
+                async_job = ("hint", command.command_id, self.round_number, self.puzzle)
             elif command.type is CommandType.CONCLUSION_BEGIN:
                 self.require_stage(RoomStage.PLAYING)
                 self._parse_payload(EmptyPayload, command.payload)
@@ -508,11 +565,39 @@ class Room:
                         command.command_id,
                     )
                 )
-                async_job = ("conclusion", f"{command.command_id}\0{content}")
+                async_job = (
+                    "conclusion",
+                    f"{command.command_id}\0{content}",
+                    self.round_number,
+                    self.puzzle,
+                )
             elif command.type is CommandType.CONCLUSION_GIVE_UP:
                 self.require_stage(RoomStage.PLAYING)
                 self._parse_payload(EmptyPayload, command.payload)
-                events.append(self._settle(command.command_id, gave_up=True))
+                events.extend(self._settle(command.command_id, gave_up=True))
+            elif command.type is CommandType.REMATCH_VOTE:
+                payload = self._parse_payload(RematchVotePayload, command.payload)
+                self.require_stage(RoomStage.SETTLEMENT)
+                if self.rematch_status is not RematchStatus.VOTING:
+                    raise DomainError(
+                        ErrorCode.REMATCH_IN_PROGRESS,
+                        "下一局已经在准备中。",
+                        status_code=409,
+                    )
+                if payload.agree:
+                    self.rematch_accepted_player_ids.add(player_id)
+                else:
+                    self.rematch_accepted_player_ids.discard(player_id)
+                events.append(
+                    self._new_event(
+                        EventType.REMATCH_UPDATED,
+                        self._rematch_payload(),
+                        command.command_id,
+                    )
+                )
+                generating = self._maybe_begin_rematch(command.command_id)
+                if generating is not None:
+                    events.append(generating)
             else:
                 raise DomainError(
                     ErrorCode.VALIDATION_ERROR,
@@ -521,16 +606,36 @@ class Room:
                 )
 
             self._remember_command(command.command_id, events)
+            if any(event.type is EventType.REMATCH_GENERATING for event in events):
+                generation_id = self.rematch_generation_id
+                if generation_id is not None:
+                    rematch_job = (generation_id, self.round_number + 1, command.command_id)
 
         await self.broadcast(*events)
         if start_question_worker:
             self.ensure_question_worker()
         if async_job is not None:
             if async_job[0] == "hint":
-                self._spawn(self._complete_hint(async_job[1]))
+                self._spawn(self._complete_hint(async_job[1], async_job[2], async_job[3]))
             else:
                 command_id, content = async_job[1].split("\0", maxsplit=1)
-                self._spawn(self._complete_conclusion(command_id, content))
+                self._spawn(
+                    self._complete_conclusion(
+                        command_id,
+                        content,
+                        async_job[2],
+                        async_job[3],
+                    )
+                )
+        if rematch_job is not None:
+            async with self.lock:
+                generation_id, target_round_number, command_id = rematch_job
+                if (
+                    self.stage is RoomStage.SETTLEMENT
+                    and self.rematch_status is RematchStatus.GENERATING
+                    and self.rematch_generation_id == generation_id
+                ):
+                    self._spawn_rematch(generation_id, target_round_number, command_id)
         return CommandOutcome(
             events=tuple(events),
             close_connection=close_connection,
@@ -539,17 +644,20 @@ class Room:
     def ensure_question_worker(self) -> None:
         if self.question_worker_task is not None and not self.question_worker_task.done():
             return
+        round_number = self.round_number
         task = asyncio.create_task(
-            self._question_worker(),
+            self._question_worker(round_number),
             name=f"question-worker:{self.id}",
         )
         self.question_worker_task = task
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
 
-    async def _question_worker(self) -> None:
+    async def _question_worker(self, round_number: int) -> None:
         while True:
             async with self.lock:
+                if round_number != self.round_number:
+                    return
                 question = next(
                     (item for item in self.questions if item.status is QuestionStatus.QUEUED),
                     None,
@@ -564,16 +672,19 @@ class Room:
                 answered_questions = [
                     item for item in self.questions if item.status is QuestionStatus.ANSWERED
                 ]
+                puzzle = self.puzzle
             await self.broadcast(thinking_event)
 
             try:
                 answer = await self.host_service.answer_question(
-                    self.puzzle,
+                    puzzle,
                     answered_questions,
                     question.content,
                 )
             except Exception:
                 async with self.lock:
+                    if round_number != self.round_number:
+                        return
                     question.status = QuestionStatus.FAILED
                     result_event = self._new_event(
                         EventType.QUESTION_FAILED,
@@ -589,6 +700,8 @@ class Room:
                     )
             else:
                 async with self.lock:
+                    if round_number != self.round_number:
+                        return
                     if self.stage is not RoomStage.PLAYING:
                         question.status = QuestionStatus.FAILED
                         result_event = self._new_event(
@@ -613,20 +726,29 @@ class Room:
                         )
             await self.broadcast(result_event)
 
-    async def _complete_hint(self, command_id: str) -> None:
+    async def _complete_hint(
+        self,
+        command_id: str,
+        round_number: int,
+        puzzle: RuntimePuzzle,
+    ) -> None:
         async with self.lock:
+            if round_number != self.round_number:
+                return
             answered_questions = [
                 item for item in self.questions if item.status is QuestionStatus.ANSWERED
             ]
             next_hint_number = self.hint_count + 1
         try:
             content = await self.host_service.create_hint(
-                self.puzzle,
+                puzzle,
                 answered_questions,
                 next_hint_number,
             )
         except Exception:
             async with self.lock:
+                if round_number != self.round_number:
+                    return
                 event = self._new_event(
                     EventType.HINT_FAILED,
                     {
@@ -642,6 +764,8 @@ class Room:
                 self._append_command_event(command_id, event)
         else:
             async with self.lock:
+                if round_number != self.round_number:
+                    return
                 if self.stage is not RoomStage.PLAYING:
                     event = self._new_event(
                         EventType.HINT_FAILED,
@@ -672,54 +796,69 @@ class Room:
                 self._append_command_event(command_id, event)
         await self.broadcast(event)
 
-    async def _complete_conclusion(self, command_id: str, content: str) -> None:
+    async def _complete_conclusion(
+        self,
+        command_id: str,
+        content: str,
+        round_number: int,
+        puzzle: RuntimePuzzle,
+    ) -> None:
+        events: list[ServerEvent] = []
         try:
-            result = await self.host_service.evaluate_conclusion(self.puzzle, content)
+            result = await self.host_service.evaluate_conclusion(puzzle, content)
         except Exception:
             async with self.lock:
-                event = self._new_event(
-                    EventType.CONCLUSION_REJECTED,
-                    {
-                        "feedback": "主持人暂时无法判断这份推理，请稍后重试。",
-                        "retryable": True,
-                    },
-                    command_id,
-                )
-                self._append_command_event(command_id, event)
+                if round_number == self.round_number:
+                    events.append(
+                        self._new_event(
+                            EventType.CONCLUSION_REJECTED,
+                            {
+                                "feedback": "主持人暂时无法判断这份推理，请稍后重试。",
+                                "retryable": True,
+                            },
+                            command_id,
+                        )
+                    )
         else:
             async with self.lock:
-                if self.stage is not RoomStage.PLAYING:
-                    event = self._new_event(
-                        EventType.CONCLUSION_REJECTED,
-                        {
-                            "feedback": "本局已经结束，这份推理不再重复结算。",
-                            "retryable": False,
-                        },
-                        command_id,
-                    )
-                elif result.result == "correct":
-                    event = self._settle(command_id, gave_up=False)
-                elif result.result == "close":
-                    event = self._new_event(
-                        EventType.CONCLUSION_CLOSE,
-                        {
-                            "feedback": result.feedback,
-                        },
-                        command_id,
-                    )
-                else:
-                    event = self._new_event(
-                        EventType.CONCLUSION_REJECTED,
-                        {"feedback": result.feedback, "retryable": False},
-                        command_id,
-                    )
-                self._append_command_event(command_id, event)
+                if round_number == self.round_number:
+                    if self.stage is not RoomStage.PLAYING:
+                        events.append(
+                            self._new_event(
+                                EventType.CONCLUSION_REJECTED,
+                                {
+                                    "feedback": "本局已经结束，这份推理不再重复结算。",
+                                    "retryable": False,
+                                },
+                                command_id,
+                            )
+                        )
+                    elif result.result == "correct":
+                        events.extend(self._settle(command_id, gave_up=False))
+                    elif result.result == "close":
+                        events.append(
+                            self._new_event(
+                                EventType.CONCLUSION_CLOSE,
+                                {"feedback": result.feedback},
+                                command_id,
+                            )
+                        )
+                    else:
+                        events.append(
+                            self._new_event(
+                                EventType.CONCLUSION_REJECTED,
+                                {"feedback": result.feedback, "retryable": False},
+                                command_id,
+                            )
+                        )
         async with self.lock:
+            for event in events:
+                self._append_command_event(command_id, event)
             if self.conclusion_command_id == command_id:
                 self.conclusion_command_id = None
-        await self.broadcast(event)
+        await self.broadcast(*events)
 
-    def _settle(self, command_id: str, *, gave_up: bool) -> ServerEvent:
+    def _settle(self, command_id: str, *, gave_up: bool) -> list[ServerEvent]:
         self.stage = RoomStage.SETTLEMENT
         self.settled_at = now_ms()
         self.last_activity_at = self.settled_at
@@ -749,15 +888,108 @@ class Room:
             ],
             "endedAt": self.settled_at,
         }
-        return self._new_event(
-            EventType.GAME_SETTLED,
-            self.settlement,
-            command_id,
-        )
+        self._initialize_rematch()
+        return [
+            self._new_event(
+                EventType.GAME_SETTLED,
+                self.settlement,
+                command_id,
+            ),
+            self._new_event(
+                EventType.REMATCH_UPDATED,
+                self._rematch_payload(),
+                command_id,
+            ),
+        ]
+
+    async def _complete_rematch(
+        self,
+        generation_id: str,
+        target_round_number: int,
+        command_id: str,
+    ) -> None:
+        try:
+            puzzle = await self.next_puzzle_provider()
+        except Exception as exc:
+            if isinstance(exc, DomainError):
+                error = {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "retryable": exc.retryable,
+                    "details": exc.details,
+                }
+            else:
+                error = {
+                    "code": ErrorCode.AI_TEMPORARILY_UNAVAILABLE,
+                    "message": "下一碗汤暂时没有准备好，请重新投票。",
+                    "retryable": True,
+                    "details": {},
+                }
+            async with self.lock:
+                if (
+                    self.stage is not RoomStage.SETTLEMENT
+                    or self.rematch_status is not RematchStatus.GENERATING
+                    or self.rematch_generation_id != generation_id
+                ):
+                    return
+                self._initialize_rematch()
+                self.last_activity_at = now_ms()
+                event = self._new_event(
+                    EventType.REMATCH_FAILED,
+                    {"rematch": self._rematch_payload(), "error": error},
+                    command_id,
+                )
+                self._append_command_event(command_id, event)
+            await self.broadcast(event)
+            return
+
+        async with self.lock:
+            if (
+                self.stage is not RoomStage.SETTLEMENT
+                or self.rematch_status is not RematchStatus.GENERATING
+                or self.rematch_generation_id != generation_id
+                or target_round_number != self.round_number + 1
+            ):
+                return
+            timestamp = now_ms()
+            self.puzzle = puzzle
+            self.round_number = target_round_number
+            self.stage = RoomStage.PLAYING
+            self.started_at = timestamp
+            self.settled_at = None
+            self.last_activity_at = timestamp
+            self.questions.clear()
+            self.discussions.clear()
+            self.hint_count = 0
+            self.settlement = None
+            self.rematch_status = None
+            self.rematch_eligible_player_ids.clear()
+            self.rematch_accepted_player_ids.clear()
+            self.rematch_generation_id = None
+            self.conclusion_command_id = None
+            self.question_worker_task = None
+            event = self._new_event(
+                EventType.ROOM_RESTARTED,
+                {
+                    "roundNumber": self.round_number,
+                    "startedAt": self.started_at,
+                    "puzzleSurface": {
+                        "id": puzzle.id,
+                        "title": puzzle.title,
+                        "surface": puzzle.surface,
+                    },
+                },
+                command_id,
+            )
+            self.round_event_start_id = event.event_id
+            self._append_command_event(command_id, event)
+        await self.broadcast(event)
 
     def _remove_player(self, player_id: str, command_id: str) -> list[ServerEvent]:
         player = self.require_player(player_id)
         del self.players[player_id]
+        self.rematch_eligible_player_ids.discard(player_id)
+        self.rematch_accepted_player_ids.discard(player_id)
         events = [
             self._new_event(
                 EventType.PLAYER_LEFT,
@@ -768,6 +1000,7 @@ class Room:
         if not self.players:
             self.stage = RoomStage.CLOSED
             self.closed_at = now_ms()
+            self._cancel_rematch_generation()
             events.append(
                 self._new_event(
                     EventType.ROOM_CLOSED,
@@ -791,6 +1024,17 @@ class Room:
                     command_id,
                 )
             )
+        if self.rematch_status is RematchStatus.VOTING and self.players:
+            events.append(
+                self._new_event(
+                    EventType.REMATCH_UPDATED,
+                    self._rematch_payload(),
+                    command_id,
+                )
+            )
+            generating = self._maybe_begin_rematch(command_id)
+            if generating is not None:
+                events.append(generating)
         return events
 
     def cleanup_due(
@@ -800,9 +1044,8 @@ class Room:
         idle_seconds: float,
         terminal_grace_seconds: float,
     ) -> bool:
-        terminal_at = self.closed_at or self.settled_at
-        if terminal_at is not None:
-            return current_time_ms >= terminal_at + int(terminal_grace_seconds * 1000)
+        if self.closed_at is not None:
+            return current_time_ms >= self.closed_at + int(terminal_grace_seconds * 1000)
         all_offline = all(not player.online for player in self.players.values())
         return all_offline and current_time_ms >= self.last_activity_at + int(idle_seconds * 1000)
 
@@ -858,6 +1101,33 @@ class Room:
         task = asyncio.create_task(coroutine)
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
+
+    def _spawn_rematch(
+        self,
+        generation_id: str,
+        target_round_number: int,
+        command_id: str,
+    ) -> None:
+        task = asyncio.create_task(
+            self._complete_rematch(generation_id, target_round_number, command_id),
+            name=f"rematch:{self.id}:{target_round_number}",
+        )
+        self.rematch_task = task
+        self.background_tasks.add(task)
+
+        def discard(completed: asyncio.Task[None]) -> None:
+            self.background_tasks.discard(completed)
+            if self.rematch_task is completed:
+                self.rematch_task = None
+
+        task.add_done_callback(discard)
+
+    def _cancel_rematch_generation(self) -> None:
+        self.rematch_generation_id = None
+        task = self.rematch_task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        self.rematch_task = None
 
     @staticmethod
     def _parse_payload(model: type[Any], payload: dict[str, Any]) -> Any:
