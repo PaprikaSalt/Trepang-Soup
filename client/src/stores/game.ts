@@ -719,9 +719,13 @@ export const useGameStore = defineStore("game", () => {
     acceptDetailPenalty = false,
   ): Promise<ConclusionSubmissionResult> {
     if (TRANSPORT_MODE === "server") {
+      // 默认提交不携带新字段，保证服务器滚动升级期间仍能兼容 1.2.x。
+      const payload = acceptDetailPenalty
+        ? { content: content.trim(), acceptDetailPenalty: true }
+        : { content: content.trim() };
       const event = await runCommand(
         "conclusion.submit",
-        { content: content.trim(), acceptDetailPenalty },
+        payload,
         [
           "game.settled",
           "conclusion.confirmation_required",
