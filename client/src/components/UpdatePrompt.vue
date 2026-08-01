@@ -2,11 +2,12 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, shallowRef } from "vue";
 
 import BaseModal from "./BaseModal.vue";
 
-const availableUpdate = ref<Update | null>(null);
+// Update 继承自 Tauri Resource，必须保留原始实例，否则 Vue Proxy 会破坏其私有句柄。
+const availableUpdate = shallowRef<Update | null>(null);
 const installing = ref(false);
 const updateError = ref("");
 const downloadedBytes = ref(0);
