@@ -126,17 +126,21 @@ class DeterministicHostService:
         has_danger = bool(re.search(r"危险|挟持|绑架|闯入|歹徒|坏人", normalized))
         has_signal = bool(re.search(r"灯|闪|信号|求救", normalized))
         has_pretend = bool(re.search(r"假装|故意|骗|伪装|钥匙", normalized))
-        matched = sum((has_danger, has_signal, has_pretend))
-        if matched == 3:
-            return ConclusionResult(result="correct")
-        if matched >= 2:
+        if not has_danger:
             return ConclusionResult(
-                result="close",
-                feedback="你们已经非常接近，还缺少一个关键行为之间的因果连接。",
+                result="wrong",
+                feedback="还没有解释故事最核心的冲突，暂时无法结束，请继续推理。",
             )
+        missing_detail_count = 2 - sum((has_signal, has_pretend))
         return ConclusionResult(
-            result="wrong",
-            feedback="这套解释还没有覆盖灯光和她故意不进门的原因。",
+            result="confirm" if missing_detail_count >= 2 else "correct",
+            feedback=(
+                "目前遗漏了较多的细节，会影响游戏评分，是否继续提交？"
+                if missing_detail_count >= 2
+                else ""
+            ),
+            missing_detail_count=missing_detail_count,
+            detail_penalty=missing_detail_count * 6,
         )
 
     async def review_game(

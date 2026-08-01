@@ -52,6 +52,14 @@ class CommandOutcome:
     close_connection: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class PendingConclusion:
+    content: str
+    round_number: int
+    missing_detail_count: int
+    detail_penalty: int
+
+
 class Room:
     def __init__(
         self,
@@ -102,6 +110,7 @@ class Room:
         self.host_transfer_seconds = host_transfer_seconds
         self.question_worker_task: asyncio.Task[None] | None = None
         self.conclusion_command_id: str | None = None
+        self.pending_conclusions: dict[str, PendingConclusion] = {}
         self.settlement_pending = False
         self.host_transfer_task: asyncio.Task[None] | None = None
         self.background_tasks: set[asyncio.Task[None]] = set()
@@ -355,6 +364,7 @@ class Room:
     ) -> CommandOutcome:
         start_question_worker = False
         async_job: tuple[str, str, int, RuntimePuzzle] | None = None
+        settlement_job: tuple[str, int, RuntimePuzzle, bool, int, int] | None = None
         rematch_job: tuple[str, int, str] | None = None
         close_connection = False
 
@@ -409,6 +419,7 @@ class Room:
                     )
                 self.stage = RoomStage.CLOSED
                 self.settlement_pending = False
+                self.pending_conclusions.clear()
                 self.closed_at = now_ms()
                 self._cancel_rematch_generation()
                 if self.host_transfer_task is not None:
@@ -436,6 +447,7 @@ class Room:
                     )
                 target = self.require_player(payload.player_id)
                 del self.players[target.id]
+                self.pending_conclusions.pop(target.id, None)
                 self.rematch_eligible_player_ids.discard(target.id)
                 self.rematch_accepted_player_ids.discard(target.id)
                 events.append(
@@ -573,19 +585,51 @@ class Room:
                 payload = self._parse_payload(ConclusionSubmitPayload, command.payload)
                 content = self._clean_content(payload.content)
                 self.conclusion_command_id = command.command_id
-                events.append(
-                    self._new_event(
-                        EventType.CONCLUSION_THINKING,
-                        {"playerId": player_id, "phase": "evaluating"},
-                        command.command_id,
+                if payload.accept_detail_penalty:
+                    pending = self.pending_conclusions.get(player_id)
+                    if (
+                        pending is None
+                        or pending.round_number != self.round_number
+                        or pending.content != content
+                    ):
+                        self.conclusion_command_id = None
+                        raise DomainError(
+                            ErrorCode.VALIDATION_ERROR,
+                            "推理内容已经变化，请重新提交后再确认。",
+                            status_code=422,
+                        )
+                    self.pending_conclusions.pop(player_id, None)
+                    self.settlement_pending = True
+                    events.append(
+                        self._new_event(
+                            EventType.CONCLUSION_THINKING,
+                            {"playerId": player_id, "phase": "settlement"},
+                            command.command_id,
+                        )
                     )
-                )
-                async_job = (
-                    "conclusion",
-                    f"{command.command_id}\0{content}",
-                    self.round_number,
-                    self.puzzle,
-                )
+                    settlement_job = (
+                        command.command_id,
+                        self.round_number,
+                        self.puzzle,
+                        False,
+                        pending.detail_penalty,
+                        pending.missing_detail_count,
+                    )
+                else:
+                    self.pending_conclusions.pop(player_id, None)
+                    events.append(
+                        self._new_event(
+                            EventType.CONCLUSION_THINKING,
+                            {"playerId": player_id, "phase": "evaluating"},
+                            command.command_id,
+                        )
+                    )
+                    async_job = (
+                        "conclusion",
+                        f"{command.command_id}\0{content}",
+                        self.round_number,
+                        self.puzzle,
+                    )
             elif command.type is CommandType.CONCLUSION_GIVE_UP:
                 self.require_stage(RoomStage.PLAYING)
                 self._parse_payload(EmptyPayload, command.payload)
@@ -605,11 +649,13 @@ class Room:
                         command.command_id,
                     )
                 )
-                async_job = (
-                    "settlement",
+                settlement_job = (
                     command.command_id,
                     self.round_number,
                     self.puzzle,
+                    True,
+                    0,
+                    0,
                 )
             elif command.type is CommandType.REMATCH_VOTE:
                 payload = self._parse_payload(RematchVotePayload, command.payload)
@@ -653,25 +699,28 @@ class Room:
         if async_job is not None:
             if async_job[0] == "hint":
                 self._spawn(self._complete_hint(async_job[1], async_job[2], async_job[3]))
-            elif async_job[0] == "settlement":
-                self._spawn(
-                    self._complete_settlement(
-                        async_job[1],
-                        async_job[2],
-                        async_job[3],
-                        gave_up=True,
-                    )
-                )
             else:
                 command_id, content = async_job[1].split("\0", maxsplit=1)
                 self._spawn(
                     self._complete_conclusion(
                         command_id,
+                        player_id,
                         content,
                         async_job[2],
                         async_job[3],
                     )
                 )
+        if settlement_job is not None:
+            self._spawn(
+                self._complete_settlement(
+                    settlement_job[0],
+                    settlement_job[1],
+                    settlement_job[2],
+                    gave_up=settlement_job[3],
+                    detail_penalty=settlement_job[4],
+                    missing_detail_count=settlement_job[5],
+                )
+            )
         if rematch_job is not None:
             async with self.lock:
                 generation_id, target_round_number, command_id = rematch_job
@@ -844,6 +893,7 @@ class Room:
     async def _complete_conclusion(
         self,
         command_id: str,
+        player_id: str,
         content: str,
         round_number: int,
         puzzle: RuntimePuzzle,
@@ -880,8 +930,29 @@ class Room:
                             )
                         )
                     elif result.result == "correct":
+                        self.pending_conclusions.pop(player_id, None)
                         self.settlement_pending = True
                         should_settle = True
+                    elif result.result == "confirm":
+                        # Reuse this penalty after confirmation instead of asking AI twice.
+                        self.pending_conclusions[player_id] = PendingConclusion(
+                            content=content,
+                            round_number=round_number,
+                            missing_detail_count=result.missing_detail_count,
+                            detail_penalty=result.detail_penalty,
+                        )
+                        events.append(
+                            self._new_event(
+                                EventType.CONCLUSION_CONFIRMATION_REQUIRED,
+                                {
+                                    "playerId": player_id,
+                                    "feedback": result.feedback,
+                                    "missingDetailCount": result.missing_detail_count,
+                                    "scorePenalty": result.detail_penalty,
+                                },
+                                command_id,
+                            )
+                        )
                     elif result.result == "close":
                         events.append(
                             self._new_event(
@@ -911,6 +982,8 @@ class Room:
                 round_number,
                 puzzle,
                 gave_up=False,
+                detail_penalty=result.detail_penalty,
+                missing_detail_count=result.missing_detail_count,
             )
 
     async def _complete_settlement(
@@ -920,6 +993,8 @@ class Room:
         puzzle: RuntimePuzzle,
         *,
         gave_up: bool,
+        detail_penalty: int,
+        missing_detail_count: int,
     ) -> None:
         async with self.lock:
             if (
@@ -967,6 +1042,8 @@ class Room:
                 gave_up=gave_up,
                 review=review,
                 participant_names=participant_names,
+                detail_penalty=detail_penalty,
+                missing_detail_count=missing_detail_count,
             )
             for event in events:
                 self._append_command_event(command_id, event)
@@ -996,11 +1073,16 @@ class Room:
         gave_up: bool,
         review: GameReview,
         participant_names: dict[str, str],
+        detail_penalty: int,
+        missing_detail_count: int,
     ) -> list[ServerEvent]:
         self.stage = RoomStage.SETTLEMENT
         self.settled_at = now_ms()
         self.last_activity_at = self.settled_at
-        score = max(30, (56 if gave_up else 92) - self.hint_count * 7)
+        score = max(
+            30,
+            (56 if gave_up else 92) - self.hint_count * 7 - detail_penalty,
+        )
         grade = "S" if score >= 90 else "A" if score >= 80 else "B" if score >= 70 else "C"
         self.settlement = {
             "truth": self.puzzle.truth,
@@ -1008,6 +1090,8 @@ class Room:
             "score": score,
             "grade": grade,
             "gaveUp": gave_up,
+            "missingDetailCount": missing_detail_count,
+            "detailPenalty": detail_penalty,
             "summary": review.summary,
             "awards": [
                 {
@@ -1021,6 +1105,7 @@ class Room:
             ],
             "endedAt": self.settled_at,
         }
+        self.pending_conclusions.clear()
         self.settlement_pending = False
         self._initialize_rematch()
         return [
@@ -1101,6 +1186,7 @@ class Room:
             self.rematch_accepted_player_ids.clear()
             self.rematch_generation_id = None
             self.conclusion_command_id = None
+            self.pending_conclusions.clear()
             self.settlement_pending = False
             self.question_worker_task = None
             event = self._new_event(
@@ -1123,6 +1209,7 @@ class Room:
     def _remove_player(self, player_id: str, command_id: str) -> list[ServerEvent]:
         player = self.require_player(player_id)
         del self.players[player_id]
+        self.pending_conclusions.pop(player_id, None)
         self.rematch_eligible_player_ids.discard(player_id)
         self.rematch_accepted_player_ids.discard(player_id)
         events = [

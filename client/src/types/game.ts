@@ -70,6 +70,8 @@ export interface Settlement {
   awards: Award[];
   endedAt: number;
   gaveUp: boolean;
+  missingDetailCount: number;
+  detailPenalty: number;
 }
 
 export interface RematchState {

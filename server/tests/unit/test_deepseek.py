@@ -319,7 +319,7 @@ async def test_conclusion_rejects_inconsistent_key_fact_coverage() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return completion(
             {
-                "result": "correct",
+                "coreConflictCovered": True,
                 "matchedFacts": ["室友正被歹徒挟持"],
                 "missingFacts": [],
             }
@@ -336,14 +336,14 @@ async def test_conclusion_rejects_inconsistent_key_fact_coverage() -> None:
     await client.aclose()
 
 
-async def test_close_conclusion_does_not_publish_missing_secret_facts() -> None:
+async def test_minor_conclusion_omission_only_reduces_score_without_leaking_fact() -> None:
     calls = 0
 
     async def handler(_: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
         result = {
-            "result": "close",
+            "coreConflictCovered": True,
             "matchedFacts": list(puzzle().key_facts[:2]),
             "missingFacts": [puzzle().key_facts[2]],
         }
@@ -359,11 +359,62 @@ async def test_close_conclusion_does_not_publish_missing_secret_facts() -> None:
 
     result = await service.evaluate_conclusion(puzzle(), "室友遇到了危险并发出了求救信号。")
 
-    assert result.result == "close"
-    assert result.feedback == "已经很接近，但仍缺少关键因果。"
-    assert result.missing_facts == ()
+    assert result.result == "correct"
+    assert result.feedback == ""
+    assert result.missing_facts == (puzzle().key_facts[2],)
+    assert result.missing_detail_count == 1
+    assert result.detail_penalty == 6
     assert puzzle().key_facts[2] not in result.feedback
     assert calls == 2
+    await client.aclose()
+
+
+async def test_missing_core_conflict_cannot_end_game() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return completion(
+            {
+                "coreConflictCovered": False,
+                "matchedFacts": [puzzle().key_facts[1]],
+                "missingFacts": [puzzle().key_facts[0], puzzle().key_facts[2]],
+            }
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.deepseek.com",
+    )
+    service = DeepSeekService(settings(), client=client)
+
+    result = await service.evaluate_conclusion(puzzle(), "她看见灯光后离开了。")
+
+    assert result.result == "wrong"
+    assert result.feedback == "还没有解释故事最核心的冲突，暂时无法结束，请继续推理。"
+    assert all(secret not in result.feedback for secret in puzzle().key_facts)
+    await client.aclose()
+
+
+async def test_many_missing_details_require_confirmation_with_score_penalty() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return completion(
+            {
+                "coreConflictCovered": True,
+                "matchedFacts": [puzzle().key_facts[0]],
+                "missingFacts": list(puzzle().key_facts[1:]),
+            }
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.deepseek.com",
+    )
+    service = DeepSeekService(settings(), client=client)
+
+    result = await service.evaluate_conclusion(puzzle(), "室友正被歹徒挟持。")
+
+    assert result.result == "confirm"
+    assert result.missing_detail_count == 2
+    assert result.detail_penalty == 12
+    assert result.feedback == "目前遗漏了较多的细节，会影响游戏评分，是否继续提交？"
     await client.aclose()
 
 

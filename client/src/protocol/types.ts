@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 1 as const;
-export const CLIENT_VERSION = "1.2.0";
+export const CLIENT_VERSION = "1.3.0";
 
 export type ProtocolDifficulty = "beginner" | "standard" | "hard";
 export type ProtocolPuzzleStyle =
@@ -48,6 +48,7 @@ export type EventType =
   | "hint.created"
   | "hint.failed"
   | "conclusion.thinking"
+  | "conclusion.confirmation_required"
   | "conclusion.close"
   | "conclusion.rejected"
   | "game.settled"
@@ -108,6 +109,8 @@ export interface ProtocolSettlement {
   score: number;
   grade: string;
   gaveUp: boolean;
+  missingDetailCount?: number;
+  detailPenalty?: number;
   summary: string;
   awards: Array<{
     title: string;

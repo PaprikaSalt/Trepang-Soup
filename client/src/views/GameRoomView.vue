@@ -14,11 +14,14 @@ const discussionDraft = ref("");
 const questionDraft = ref("");
 const conclusionDraft = ref("");
 const conclusionOpen = ref(false);
+const detailConfirmationOpen = ref(false);
 const giveUpOpen = ref(false);
 const closeRoomOpen = ref(false);
 const hintLoading = ref(false);
 const conclusionLoading = ref(false);
 const conclusionFeedback = ref("");
+const pendingDetailCount = ref(0);
+const pendingDetailPenalty = ref(0);
 const feed = ref<HTMLElement | null>(null);
 
 onMounted(async () => {
@@ -64,6 +67,12 @@ function answerLabel(question: Question): string {
   return question.answerType ? labels[question.answerType] : "回答";
 }
 
+function latestConclusionFeedback(): string | undefined {
+  return [...game.timeline]
+    .reverse()
+    .find((item) => item.title === "结案反馈")?.content;
+}
+
 async function sendDiscussion(): Promise<void> {
   const content = discussionDraft.value;
   try {
@@ -94,26 +103,35 @@ async function askForHint(): Promise<void> {
   }
 }
 
-async function submitConclusion(): Promise<void> {
+async function submitConclusion(acceptDetailPenalty = false): Promise<void> {
   if (!conclusionDraft.value.trim() || conclusionLoading.value) return;
   conclusionLoading.value = true;
   conclusionFeedback.value = "";
   try {
-    const result = await game.submitConclusion(conclusionDraft.value);
-    if (result === "correct") {
+    const result = await game.submitConclusion(conclusionDraft.value, acceptDetailPenalty);
+    if (result.status === "settled") {
       conclusionOpen.value = false;
-    } else if (result === "close") {
-      const latestFeedback = [...game.timeline]
-        .reverse()
-        .find((item) => item.title === "结案反馈")?.content;
+      detailConfirmationOpen.value = false;
+    } else if (result.status === "confirmation_required") {
+      pendingDetailCount.value = result.missingDetailCount;
+      pendingDetailPenalty.value = result.scorePenalty;
+      detailConfirmationOpen.value = true;
+    } else if (result.status === "continue") {
+      detailConfirmationOpen.value = false;
       conclusionFeedback.value =
-        latestFeedback || "已经很接近了，请继续补全关键行为之间的因果关系。";
+        latestConclusionFeedback() || "已经很接近了，请继续补全关键行为之间的因果关系。";
     } else {
-      conclusionFeedback.value = game.lastError || "主持人暂时无法判断，请稍后重试。";
+      detailConfirmationOpen.value = false;
+      conclusionFeedback.value =
+        latestConclusionFeedback() || game.lastError || "主持人暂时无法判断，请稍后重试。";
     }
   } finally {
     conclusionLoading.value = false;
   }
+}
+
+async function confirmConclusionWithPenalty(): Promise<void> {
+  await submitConclusion(true);
 }
 
 async function giveUp(): Promise<void> {
@@ -391,12 +409,44 @@ function timelineKey(item: TimelineItem): string {
             class="primary-button"
             type="button"
             :disabled="!conclusionDraft.trim() || conclusionLoading"
-            @click="submitConclusion"
+            @click="submitConclusion()"
           >
             <span v-if="conclusionLoading" class="button-spinner"></span>
             {{ conclusionLoading ? "主持人正在核对……" : "提交完整推理" }}
           </button>
         </div>
+      </div>
+    </BaseModal>
+
+    <BaseModal
+      :open="detailConfirmationOpen"
+      eyebrow="DETAIL CHECK"
+      title="目前还遗漏了较多细节"
+      description="这不会阻止本局结束，但会影响最终评分。是否仍然提交？"
+      @close="detailConfirmationOpen = false"
+    >
+      <div class="detail-penalty-summary">
+        <span>未覆盖细节 {{ pendingDetailCount }} 项</span>
+        <strong>预计扣除 {{ pendingDetailPenalty }} 分</strong>
+      </div>
+      <div class="confirm-actions">
+        <button
+          class="secondary-button"
+          type="button"
+          :disabled="conclusionLoading"
+          @click="detailConfirmationOpen = false"
+        >
+          继续推理
+        </button>
+        <button
+          class="primary-button"
+          type="button"
+          :disabled="conclusionLoading"
+          @click="confirmConclusionWithPenalty"
+        >
+          <span v-if="conclusionLoading" class="button-spinner"></span>
+          {{ conclusionLoading ? "正在结算……" : "仍然结束本局" }}
+        </button>
       </div>
     </BaseModal>
 

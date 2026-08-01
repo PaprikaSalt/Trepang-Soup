@@ -82,6 +82,10 @@ async function leaveRoom(): Promise<void> {
           <span>公共提示 {{ game.hintCount }} 次</span>
           <i></i>
           <span>{{ settlement.gaveUp ? "公布汤底" : "成功结案" }}</span>
+          <template v-if="settlement.detailPenalty">
+            <i></i>
+            <span>遗漏细节 {{ settlement.missingDetailCount }} 项 · 扣 {{ settlement.detailPenalty }} 分</span>
+          </template>
         </div>
       </section>
 

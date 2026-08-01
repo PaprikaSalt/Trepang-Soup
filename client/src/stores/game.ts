@@ -39,6 +39,12 @@ const RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000] as const;
 const sleep = (duration: number) =>
   new Promise<void>((resolve) => window.setTimeout(resolve, duration));
 
+export type ConclusionSubmissionResult =
+  | { status: "settled" }
+  | { status: "confirmation_required"; missingDetailCount: number; scorePenalty: number }
+  | { status: "continue" }
+  | { status: "rejected" };
+
 const MOCK_PUZZLE: Puzzle = {
   id: "mock-dorm-light",
   title: "门缝里的光",
@@ -123,6 +129,8 @@ function mapSettlement(settlement: ProtocolSettlement): Settlement {
     })),
     endedAt: settlement.endedAt,
     gaveUp: settlement.gaveUp,
+    missingDetailCount: settlement.missingDetailCount ?? 0,
+    detailPenalty: settlement.detailPenalty ?? 0,
   };
 }
 
@@ -706,31 +714,44 @@ export const useGameStore = defineStore("game", () => {
     });
   }
 
-  async function submitConclusion(content: string): Promise<"correct" | "close" | "rejected"> {
+  async function submitConclusion(
+    content: string,
+    acceptDetailPenalty = false,
+  ): Promise<ConclusionSubmissionResult> {
     if (TRANSPORT_MODE === "server") {
       const event = await runCommand(
         "conclusion.submit",
-        { content: content.trim() },
-        ["game.settled", "conclusion.close", "conclusion.rejected"],
+        { content: content.trim(), acceptDetailPenalty },
+        [
+          "game.settled",
+          "conclusion.confirmation_required",
+          "conclusion.close",
+          "conclusion.rejected",
+        ],
         60_000,
       );
-      return event.type === "game.settled"
-        ? "correct"
-        : event.type === "conclusion.close"
-          ? "close"
-          : "rejected";
+      if (event.type === "game.settled") return { status: "settled" };
+      if (event.type === "conclusion.confirmation_required") {
+        return {
+          status: "confirmation_required",
+          missingDetailCount: Number(event.payload.missingDetailCount || 0),
+          scorePenalty: Number(event.payload.scorePenalty || 0),
+        };
+      }
+      return { status: event.type === "conclusion.rejected" ? "rejected" : "continue" };
     }
     await sleep(900);
     const normalized = content.replace(/\s/g, "");
-    const correct =
-      /危险|挟持|绑架|闯入|歹徒|坏人/.test(normalized) &&
-      /灯|闪|信号|求救/.test(normalized) &&
-      /假装|故意|骗|伪装|钥匙/.test(normalized);
-    if (correct) {
-      finishGame(false);
-      return "correct";
+    const coreCovered = /危险|挟持|绑架|闯入|歹徒|坏人/.test(normalized);
+    if (!coreCovered) return { status: "continue" };
+    const missingDetailCount = Number(!/灯|闪|信号|求救/.test(normalized)) +
+      Number(!/假装|故意|骗|伪装|钥匙/.test(normalized));
+    const detailPenalty = missingDetailCount * 6;
+    if (missingDetailCount >= 2 && !acceptDetailPenalty) {
+      return { status: "confirmation_required", missingDetailCount, scorePenalty: detailPenalty };
     }
-    return "close";
+    finishGame(false, detailPenalty, missingDetailCount);
+    return { status: "settled" };
   }
 
   async function giveUp(): Promise<void> {
@@ -742,9 +763,9 @@ export const useGameStore = defineStore("game", () => {
     finishGame(true);
   }
 
-  function finishGame(gaveUp: boolean): void {
+  function finishGame(gaveUp: boolean, detailPenalty = 0, missingDetailCount = 0): void {
     const baseScore = gaveUp ? 56 : 92;
-    const score = Math.max(30, baseScore - hintCount.value * 7);
+    const score = Math.max(30, baseScore - hintCount.value * 7 - detailPenalty);
     settlement.value = {
       score,
       grade: score >= 90 ? "S" : score >= 80 ? "A" : score >= 70 ? "B" : "C",
@@ -770,6 +791,8 @@ export const useGameStore = defineStore("game", () => {
       ],
       endedAt: Date.now(),
       gaveUp,
+      missingDetailCount,
+      detailPenalty,
     };
     stage.value = "settlement";
     rematch.value = {

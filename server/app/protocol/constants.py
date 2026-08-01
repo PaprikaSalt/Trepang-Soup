@@ -45,6 +45,7 @@ class EventType(StrEnum):
     HINT_CREATED = "hint.created"
     HINT_FAILED = "hint.failed"
     CONCLUSION_THINKING = "conclusion.thinking"
+    CONCLUSION_CONFIRMATION_REQUIRED = "conclusion.confirmation_required"
     CONCLUSION_CLOSE = "conclusion.close"
     CONCLUSION_REJECTED = "conclusion.rejected"
     GAME_SETTLED = "game.settled"

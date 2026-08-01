@@ -2441,6 +2441,28 @@ svg {
   background: var(--amber-soft);
 }
 
+.detail-penalty-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(215, 169, 91, 0.24);
+  border-radius: 12px;
+  background: var(--amber-soft);
+}
+
+.detail-penalty-summary span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.detail-penalty-summary strong {
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .modal-actions,
 .confirm-actions {
   display: flex;

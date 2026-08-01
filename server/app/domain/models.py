@@ -134,6 +134,8 @@ class ConclusionResult:
     result: str
     feedback: str = ""
     missing_facts: tuple[str, ...] = field(default_factory=tuple)
+    missing_detail_count: int = 0
+    detail_penalty: int = 0
 
 
 @dataclass(frozen=True, slots=True)

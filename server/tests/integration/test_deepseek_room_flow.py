@@ -76,7 +76,7 @@ async def test_mocked_deepseek_drives_room_from_generation_to_settlement() -> No
         completion({"content": "想想她为什么必须让屋内的人相信自己无法进门。"}),
         completion(
             {
-                "result": "correct",
+                "coreConflictCovered": True,
                 "matchedFacts": key_facts,
                 "missingFacts": [],
             }

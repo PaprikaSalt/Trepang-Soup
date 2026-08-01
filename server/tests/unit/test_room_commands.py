@@ -9,6 +9,7 @@ from app.config import Settings
 from app.domain.errors import DomainError
 from app.domain.models import (
     AnswerType,
+    ConclusionResult,
     Difficulty,
     HostAnswer,
     PuzzleSource,
@@ -122,6 +123,19 @@ class BlockingHintHost(DeterministicHostService):
         self.hint_started.set()
         await self.release_hint.wait()
         return "这是一条来自上一轮的迟到提示。"
+
+
+class CountingConclusionHost(DeterministicHostService):
+    def __init__(self) -> None:
+        self.conclusion_calls = 0
+
+    async def evaluate_conclusion(
+        self,
+        puzzle: RuntimePuzzle,
+        content: str,
+    ) -> ConclusionResult:
+        self.conclusion_calls += 1
+        return await super().evaluate_conclusion(puzzle, content)
 
 
 async def create_multiplayer_room(
@@ -424,6 +438,62 @@ async def test_correct_conclusion_settles_and_reveals_truth() -> None:
     settled = next(event for event in room.recent_events if event.type is EventType.GAME_SETTLED)
     assert settled.payload["truth"] == room.puzzle.truth
     assert room.snapshot_payload(player_id)["settlement"]["truth"] == room.puzzle.truth
+
+
+async def test_conclusion_core_gate_and_detail_confirmation_use_one_evaluation() -> None:
+    host_service = CountingConclusionHost()
+    room, player_id = await create_room(host_service)
+    await start_room(room, player_id)
+
+    await room.execute_command(
+        player_id,
+        command(
+            room,
+            "cmd_missing_core",
+            CommandType.CONCLUSION_SUBMIT,
+            {"content": "灯光是室友发出的信号，她还假装丢了钥匙。"},
+        ),
+    )
+    await wait_for_background_jobs(room)
+    rejected = room.processed_command_events["cmd_missing_core"][-1]
+    assert rejected.type is EventType.CONCLUSION_REJECTED
+    assert "最核心的冲突" in rejected.payload["feedback"]
+    assert room.stage.value == "playing"
+
+    content = "室友被歹徒挟持，正处于危险中。"
+    await room.execute_command(
+        player_id,
+        command(
+            room,
+            "cmd_many_details",
+            CommandType.CONCLUSION_SUBMIT,
+            {"content": content},
+        ),
+    )
+    await wait_for_background_jobs(room)
+    confirmation = room.processed_command_events["cmd_many_details"][-1]
+    assert confirmation.type is EventType.CONCLUSION_CONFIRMATION_REQUIRED
+    assert confirmation.payload["missingDetailCount"] == 2
+    assert confirmation.payload["scorePenalty"] == 12
+    assert room.stage.value == "playing"
+
+    await room.execute_command(
+        player_id,
+        command(
+            room,
+            "cmd_accept_detail_penalty",
+            CommandType.CONCLUSION_SUBMIT,
+            {"content": content, "acceptDetailPenalty": True},
+        ),
+    )
+    await wait_for_background_jobs(room)
+
+    assert host_service.conclusion_calls == 2
+    assert room.stage is RoomStage.SETTLEMENT
+    assert room.settlement is not None
+    assert room.settlement["score"] == 80
+    assert room.settlement["missingDetailCount"] == 2
+    assert room.settlement["detailPenalty"] == 12
 
 
 async def test_settlement_uses_round_contributions_and_publishes_three_awards() -> None:

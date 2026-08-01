@@ -1,5 +1,3 @@
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from app.domain.models import AnswerType, RuntimePuzzle
@@ -71,7 +69,7 @@ class HintOutput(AIModel):
 
 
 class ConclusionOutput(AIModel):
-    result: Literal["correct", "close", "wrong"]
+    core_conflict_covered: bool = Field(alias="coreConflictCovered")
     matched_facts: list[str] = Field(default_factory=list, alias="matchedFacts")
     missing_facts: list[str] = Field(default_factory=list, alias="missingFacts")
 

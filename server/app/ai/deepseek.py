@@ -63,10 +63,11 @@ SAFE_ANSWERS: dict[AnswerType, str] = {
     AnswerType.PARTIAL: "部分正确，请拆成单个判断继续提问。",
 }
 
-SAFE_CONCLUSION_FEEDBACK = {
-    "close": "已经很接近，但仍缺少关键因果。",
-    "wrong": "这份推理与汤底仍有关键偏差。",
-}
+DETAIL_PENALTY_PER_FACT = 6
+DETAIL_CONFIRMATION_THRESHOLD = 2
+MAX_DETAIL_PENALTY = 30
+CORE_MISSING_FEEDBACK = "还没有解释故事最核心的冲突，暂时无法结束，请继续推理。"
+DETAIL_CONFIRMATION_FEEDBACK = "目前遗漏了较多的细节，会影响游戏评分，是否继续提交？"
 
 
 class AIServiceError(RuntimeError):
@@ -266,9 +267,11 @@ class DeepSeekService:
         output = await self._json_completion(
             ConclusionOutput,
             system=(
-                f"{HOST_SECURITY_RULES}\n判断玩家结论是否覆盖全部关键事实。matchedFacts 和 "
-                "missingFacts 只是服务端内部校验字段，只能逐字选自给出的 keyFacts。"
-                "结论正确时不得缺少任何关键事实。不要生成面向玩家的解释。"
+                f"{HOST_SECURITY_RULES}\n宽松判断玩家是否已经猜出故事最核心的冲突、动机或"
+                "关键反转。coreConflictCovered 只要核心故事链成立就应为 true，不要求覆盖"
+                "全部配角、时间、地点、手段或收尾细节。matchedFacts 和 missingFacts 只是"
+                "服务端内部评分字段，必须把给出的 keyFacts 完整分组，且只能逐字选自"
+                "keyFacts。不要生成面向玩家的解释。"
             ),
             user=json.dumps(
                 {
@@ -276,7 +279,7 @@ class DeepSeekService:
                     "puzzle": self._private_puzzle(puzzle),
                     "playerConclusion": content,
                     "requiredJson": {
-                        "result": "correct|close|wrong",
+                        "coreConflictCovered": "是否已猜出最核心冲突或反转",
                         "matchedFacts": ["从keyFacts逐字选择"],
                         "missingFacts": ["从keyFacts逐字选择"],
                     },
@@ -294,13 +297,30 @@ class DeepSeekService:
         expected_missing = known - matched
         if missing != expected_missing:
             raise AIOutputError("DeepSeek 返回的关键事实覆盖关系不一致。", retryable=False)
-        if output.result == "correct" and expected_missing:
-            raise AIOutputError("DeepSeek 在关键事实未覆盖时错误判定为正确。", retryable=False)
-        if output.result != "correct" and not expected_missing:
-            raise AIOutputError("DeepSeek 在关键事实全部覆盖时拒绝了正确答案。", retryable=False)
+        if output.core_conflict_covered and not matched:
+            raise AIOutputError(
+                "DeepSeek 在没有命中事实时错误判定核心冲突已覆盖。", retryable=False
+            )
+        if not output.core_conflict_covered and not expected_missing:
+            raise AIOutputError("DeepSeek 在全部事实已覆盖时拒绝了结案。", retryable=False)
+
+        missing_detail_count = len(expected_missing)
+        detail_penalty = min(MAX_DETAIL_PENALTY, missing_detail_count * DETAIL_PENALTY_PER_FACT)
+        if not output.core_conflict_covered:
+            result = "wrong"
+            feedback = CORE_MISSING_FEEDBACK
+        elif missing_detail_count >= DETAIL_CONFIRMATION_THRESHOLD:
+            result = "confirm"
+            feedback = DETAIL_CONFIRMATION_FEEDBACK
+        else:
+            result = "correct"
+            feedback = ""
         return ConclusionResult(
-            result=output.result,
-            feedback=SAFE_CONCLUSION_FEEDBACK.get(output.result, ""),
+            result=result,
+            feedback=feedback,
+            missing_facts=tuple(expected_missing),
+            missing_detail_count=missing_detail_count,
+            detail_penalty=detail_penalty,
         )
 
     async def review_game(

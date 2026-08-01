@@ -20,6 +20,7 @@ from app.domain.models import (  # noqa: E402
     PuzzleStyle,
     Question,
     QuestionStatus,
+    RuntimePuzzle,
 )
 
 SAFE_PUBLIC_ANSWERS = {
@@ -63,6 +64,30 @@ async def run(difficulty: Difficulty, style: PuzzleStyle) -> None:
         conclusion = await service.evaluate_conclusion(puzzle, puzzle.truth)
         if conclusion.result != "correct":
             raise AssertionError("the complete truth was not accepted as a correct conclusion")
+        grading_puzzle = RuntimePuzzle(
+            id="puzzle_conclusion_grading_smoke",
+            title="门外的求救",
+            surface="她发现门缝灯光异常，却故意说钥匙丢了，随后离开并报警。",
+            truth="室友被歹徒挟持，用约定的灯光求救。她假装丢钥匙稳住歹徒并安全报警。",
+            key_facts=(
+                "室友正被歹徒挟持",
+                "门缝灯光是约定的求救信号",
+                "她假装丢钥匙是为了稳住屋内歹徒",
+                "她离开现场后安全报警",
+            ),
+        )
+        lenient_conclusion = await service.evaluate_conclusion(
+            grading_puzzle,
+            "室友被歹徒挟持，正处于危险中。",
+        )
+        if lenient_conclusion.result != "confirm" or lenient_conclusion.detail_penalty <= 0:
+            raise AssertionError("core-only conclusion did not enter detail confirmation")
+        missing_core = await service.evaluate_conclusion(
+            grading_puzzle,
+            "她最后离开现场并报了警。",
+        )
+        if missing_core.result != "wrong":
+            raise AssertionError("conclusion without the core conflict was allowed to settle")
         players = [
             Player(
                 id=f"player_smoke_{index}",
@@ -110,6 +135,9 @@ async def run(difficulty: Difficulty, style: PuzzleStyle) -> None:
                 "simulatedHistoryCount": len(simulated_history),
                 "hintLength": len(hint),
                 "conclusion": conclusion.result,
+                "lenientConclusion": lenient_conclusion.result,
+                "detailPenalty": lenient_conclusion.detail_penalty,
+                "missingCoreConclusion": missing_core.result,
                 "awards": [award.title for award in review.awards],
             },
             ensure_ascii=False,

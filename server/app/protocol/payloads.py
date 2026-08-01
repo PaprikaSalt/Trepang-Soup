@@ -35,3 +35,4 @@ class RematchVotePayload(ProtocolModel):
 
 class ConclusionSubmitPayload(ProtocolModel):
     content: str = Field(min_length=1, max_length=800)
+    accept_detail_penalty: bool = Field(default=False, strict=True)
