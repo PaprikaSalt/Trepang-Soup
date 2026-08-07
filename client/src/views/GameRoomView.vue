@@ -63,6 +63,7 @@ function answerLabel(question: Question): string {
     no: "否",
     irrelevant: "无关",
     partial: "部分正确",
+    cannot_reveal: "不能透露",
   };
   return question.answerType ? labels[question.answerType] : "回答";
 }

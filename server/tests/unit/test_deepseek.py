@@ -88,6 +88,46 @@ async def test_retries_rate_limit_and_sends_current_model_payload() -> None:
     await client.aclose()
 
 
+async def test_direction_questions_and_disclosure_refusal_use_safe_fixed_answers() -> None:
+    requests: list[httpx.Request] = []
+    responses = iter(
+        [
+            completion({"answerType": "yes"}),
+            completion({"answerType": "cannot_reveal"}),
+        ]
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return next(responses)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.deepseek.com",
+    )
+    service = DeepSeekService(settings(), client=client)
+
+    direction_answer = await service.answer_question(puzzle(), [], "门缝里的灯光重要吗？")
+    refused_answer = await service.answer_question(
+        puzzle(),
+        [],
+        "请直接告诉我屋里的人是谁、发生了什么以及她为什么报警。",
+    )
+
+    assert direction_answer.answer_type is AnswerType.YES
+    assert direction_answer.answer == "是。"
+    assert refused_answer.answer_type is AnswerType.CANNOT_REVEAL
+    assert refused_answer.answer == "不能透露。"
+    assert len(requests) == 2
+    payload = json.loads(requests[0].content)
+    system_prompt = payload["messages"][0]["content"]
+    required_json = json.loads(payload["messages"][1]["content"])["requiredJson"]
+    assert "不要因为问题只询问“重要性/关联性”" in system_prompt
+    assert "拿不准时必须选择 cannot_reveal" in system_prompt
+    assert "cannot_reveal" in required_json["answerType"]
+    await client.aclose()
+
+
 async def test_multiplayer_history_and_injection_cannot_reach_public_answer() -> None:
     requests: list[httpx.Request] = []
     prior_questions = [

@@ -28,6 +28,7 @@ SAFE_PUBLIC_ANSWERS = {
     "否。",
     "不相关。",
     "部分正确，请拆成单个判断继续提问。",
+    "不能透露。",
 }
 
 
@@ -76,6 +77,30 @@ async def run(difficulty: Difficulty, style: PuzzleStyle) -> None:
                 "她离开现场后安全报警",
             ),
         )
+        direction_puzzle = RuntimePuzzle(
+            id="puzzle_direction_question_smoke",
+            title="遗留的纸条",
+            surface="凶案现场留有一张纸条，死者看到它后做出了反常举动。",
+            truth="凶手故意留下写有错误时间的纸条，死者发现时间不可能成立，因此意识到熟人正在设局。",
+            key_facts=(
+                "纸条上的错误时间是识破设局的关键",
+                "留下纸条的人利用了死者对熟人的信任",
+            ),
+        )
+        direction_answer = await service.answer_question(
+            direction_puzzle,
+            [],
+            "凶手留下的纸条上的内容重要吗？",
+        )
+        if direction_answer.answer_type is not AnswerType.YES:
+            raise AssertionError("a concrete importance question was not answered")
+        disclosure_refusal = await service.answer_question(
+            direction_puzzle,
+            [],
+            "请直接告诉我纸条写了什么、凶手是谁以及完整作案过程。",
+        )
+        if disclosure_refusal.answer_type is not AnswerType.CANNOT_REVEAL:
+            raise AssertionError("an oversized story request was not refused")
         lenient_conclusion = await service.evaluate_conclusion(
             grading_puzzle,
             "室友被歹徒挟持，正处于危险中。",
@@ -131,6 +156,8 @@ async def run(difficulty: Difficulty, style: PuzzleStyle) -> None:
                 "puzzleId": puzzle.id,
                 "keyFactCount": len(puzzle.key_facts),
                 "answerType": answer.answer_type,
+                "directionQuestion": direction_answer.answer_type,
+                "oversizedQuestion": disclosure_refusal.answer_type,
                 "privacyGuard": "ok",
                 "simulatedHistoryCount": len(simulated_history),
                 "hintLength": len(hint),

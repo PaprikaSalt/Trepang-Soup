@@ -46,6 +46,7 @@ class AnswerType(StrEnum):
     NO = "no"
     IRRELEVANT = "irrelevant"
     PARTIAL = "partial"
+    CANNOT_REVEAL = "cannot_reveal"
 
 
 @dataclass(slots=True)

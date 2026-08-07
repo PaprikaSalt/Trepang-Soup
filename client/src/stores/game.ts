@@ -192,6 +192,9 @@ function timelineFromEvent(
 
 function mockAnswer(content: string): Pick<Question, "answer" | "answerType"> {
   const normalized = content.replace(/\s/g, "");
+  if (/是谁|是什么|为什么|具体.*(?:内容|情节)|完整.*(?:故事|汤底)|告诉我|直接说/.test(normalized)) {
+    return { answer: "不能透露。", answerType: "cannot_reveal" };
+  }
   if (/灯|光|闪|信号/.test(normalized)) {
     return { answer: "是。灯光不是普通的照明，它确实在向林夏传递信息。", answerType: "yes" };
   }

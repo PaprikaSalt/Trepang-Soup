@@ -36,7 +36,7 @@ export interface Question {
   createdAt: number;
   status: QuestionStatus;
   answer?: string;
-  answerType?: "yes" | "no" | "irrelevant" | "partial";
+  answerType?: "yes" | "no" | "irrelevant" | "partial" | "cannot_reveal";
 }
 
 export interface DiscussionMessage {

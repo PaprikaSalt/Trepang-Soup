@@ -78,6 +78,14 @@ class DeterministicHostService:
     ) -> HostAnswer:
         del puzzle, answered_questions
         normalized = re.sub(r"\s+", "", content)
+        if re.search(
+            r"是谁|是什么|为什么|具体.*(?:内容|情节)|完整.*(?:故事|汤底)|告诉我|直接说",
+            normalized,
+        ):
+            return HostAnswer(
+                answer_type=AnswerType.CANNOT_REVEAL,
+                answer="不能透露。",
+            )
         if re.search(r"灯|光|闪|信号", normalized):
             return HostAnswer(
                 answer_type=AnswerType.YES,
@@ -99,6 +107,11 @@ class DeterministicHostService:
             return HostAnswer(
                 answer_type=AnswerType.NO,
                 answer="否。室友还活着，也没有灵异因素。",
+            )
+        if re.search(r"重要|关联|关系|关键", normalized):
+            return HostAnswer(
+                answer_type=AnswerType.NO,
+                answer="否。",
             )
         return HostAnswer(
             answer_type=AnswerType.IRRELEVANT,

@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 1 as const;
-export const CLIENT_VERSION = "1.3.1";
+export const CLIENT_VERSION = "1.4.0";
 
 export type ProtocolDifficulty = "beginner" | "standard" | "hard";
 export type ProtocolPuzzleStyle =
@@ -91,7 +91,7 @@ export interface ProtocolQuestion {
   content: string;
   createdAt: number;
   status: "queued" | "thinking" | "answered" | "cancelled" | "failed";
-  answerType?: "yes" | "no" | "irrelevant" | "partial";
+  answerType?: "yes" | "no" | "irrelevant" | "partial" | "cannot_reveal";
   answer?: string;
 }
 
