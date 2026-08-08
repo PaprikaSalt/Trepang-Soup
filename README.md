@@ -1,15 +1,25 @@
-# Trepang Soup
+<p align="center">
+  <img src="assets/trepang-mouse.png" width="360" alt="Trepang Soup 海参鼠">
+</p>
 
-Trepang Soup（海龟汤）是面向少量好友的 Windows 多人在线海龟汤平台，由 DeepSeek
-担任主持人。本文件是仓库唯一维护文档；历史需求、实施过程和版本变化以 Git 历史及
-[GitHub Releases](https://github.com/PaprikaSalt/Trepang-Soup/releases) 为准。
+<h1 align="center">Trepang Soup</h1>
+
+<p align="center"><strong>海龟汤 · 多人在线 AI 主持人桌面游戏</strong></p>
+
+<p align="center">
+  无需注册，叫上朋友、输入邀请码，就能开始一场由 DeepSeek 主持的海龟汤。
+</p>
+
+Trepang Soup 面向少量好友，提供 Windows 原生桌面客户端、实时多人房间、AI 或私人
+题库，以及从提问到结算、续局的完整流程。本文件是仓库唯一维护文档；历史版本变化以
+Git 历史及 [GitHub Releases](https://github.com/PaprikaSalt/Trepang-Soup/releases) 为准。
 
 ## 当前基线
 
 - 客户端：`1.4.0`，Windows 10/11 x64，Tauri 2 + Vue 3 + TypeScript。
 - 服务端：`1.4.0`，Ubuntu 24.04 x86-64，FastAPI + WebSocket + SQLite。
 - 通信协议：`1`。
-- 公网入口：`https://api.ljy32.cn`，WebSocket 自动使用 `wss://api.ljy32.cn`。
+- 公网入口由部署环境配置；HTTPS 与 WSS 使用同一 API 域名。
 - 规模边界：好友房间，最多 20 人；服务端必须保持单 worker。
 
 ## 产品与规则
@@ -96,7 +106,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 
 ```dotenv
 APP_ENV=production
-PUBLIC_BASE_URL=https://api.ljy32.cn
+PUBLIC_BASE_URL=https://api.example.com
 DATABASE_URL=sqlite+aiosqlite:///./data/trepang.db
 ADMIN_PASSWORD_HASH=<argon2id-verifier>
 SESSION_SIGNING_KEY=<至少32字节的随机密钥>
@@ -120,8 +130,8 @@ VITE_TRANSPORT_MODE=server
 VITE_SERVER_URL=http://127.0.0.1:8787
 ```
 
-正式构建默认连接 `https://api.ljy32.cn`。仅查看界面时可将
-`VITE_TRANSPORT_MODE` 改为 `mock`。
+正式构建的服务地址由构建环境配置。仅查看界面时可将 `VITE_TRANSPORT_MODE` 改为
+`mock`。
 
 ## 接口与协议速查
 
@@ -208,7 +218,7 @@ cargo fmt --manifest-path src-tauri\Cargo.toml --check
 
 ```bash
 curl --fail http://127.0.0.1:8787/health
-curl --fail https://api.ljy32.cn/health
+curl --fail https://api.example.com/health
 ```
 
 - 返回的 `version` 应与当前服务端版本一致，`protocolVersion` 当前为 `1`。
