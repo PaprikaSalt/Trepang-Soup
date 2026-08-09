@@ -1717,6 +1717,10 @@ svg {
   grid-template-columns: minmax(220px, 0.72fr) minmax(480px, 1.55fr) minmax(300px, 0.93fr);
 }
 
+.mobile-game-tabs {
+  display: none;
+}
+
 .game-sidebar,
 .host-column {
   min-width: 0;
@@ -3464,8 +3468,8 @@ svg {
   }
 
   .app-shell {
-    overflow-x: hidden;
-    overflow-y: visible;
+    /* Keep the document as the only scrolling container on ordinary mobile pages. */
+    overflow: clip;
   }
 
   .app-header,
@@ -3489,6 +3493,16 @@ svg {
 
   .header-actions {
     gap: 7px;
+  }
+
+  .header-actions > .text-button:not(.text-button--danger) {
+    display: none;
+  }
+
+  .icon-button,
+  .header-actions .text-button {
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .text-button {
@@ -3545,44 +3559,160 @@ svg {
   }
 
   .page--game {
-    overflow-y: auto;
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .page--game .app-header {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  /* On phones the desktop columns become persistent panes behind a compact tab bar. */
+  .mobile-game-tabs {
+    z-index: 5;
+    display: grid;
+    min-height: 54px;
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(12, 22, 29, 0.88);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-game-tabs button {
+    display: flex;
+    min-width: 0;
+    min-height: 42px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    touch-action: manipulation;
+    background: transparent;
+  }
+
+  .mobile-game-tabs button span {
+    overflow: hidden;
+    font-size: 13px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-game-tabs button small {
+    flex: 0 0 auto;
+    color: #64737b;
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .mobile-game-tabs .mobile-game-tabs__button--active {
+    border-color: rgba(215, 169, 91, 0.26);
+    color: var(--amber-light);
+    background: rgba(215, 169, 91, 0.1);
+  }
+
+  .mobile-game-tabs .mobile-game-tabs__button--active small {
+    color: var(--amber);
   }
 
   .game-layout {
-    display: flex;
-    flex: none;
-    flex-direction: column;
+    position: relative;
+    display: block;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
   }
 
-  .game-sidebar--left,
-  .game-sidebar--right {
+  .game-layout > .game-sidebar,
+  .game-layout > .host-column {
+    display: none;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
     border: 0;
-    border-bottom: 1px solid var(--line);
+  }
+
+  .game-layout--mobile-story > .game-sidebar--left,
+  .game-layout--mobile-host > .host-column,
+  .game-layout--mobile-social > .game-sidebar--right {
+    display: flex;
   }
 
   .game-sidebar--left {
-    min-height: 420px;
+    overflow: hidden;
+  }
+
+  .game-sidebar--left .puzzle-panel {
+    max-height: 46%;
+    flex: 0 1 auto;
+    padding: 20px 18px;
+    overflow-y: auto;
+  }
+
+  .game-sidebar--left .members-panel {
+    flex: 1 1 auto;
+    padding: 18px;
+    overflow-y: auto;
+  }
+
+  .game-sidebar--left .conclusion-button {
+    min-height: 52px;
+    flex: 0 0 auto;
+    margin: 10px 14px calc(12px + env(safe-area-inset-bottom));
   }
 
   .host-column {
-    min-height: 760px;
-    border-bottom: 1px solid var(--line);
+    overflow: hidden;
+  }
+
+  .column-heading {
+    min-height: 58px;
+    flex: 0 0 auto;
+    padding: 10px 14px;
+  }
+
+  .timeline-feed {
+    padding: 18px 14px;
+    overscroll-behavior: contain;
+  }
+
+  .question-composer {
+    flex: 0 0 auto;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  }
+
+  .composer-label small {
+    display: none;
   }
 
   .game-sidebar--right {
-    min-height: 720px;
+    overflow: hidden;
   }
 
-  .puzzle-panel,
-  .members-panel {
-    padding-inline: 18px;
+  .queue-panel {
+    max-height: none;
+    flex: 0 0 44%;
+    padding: 16px 14px 13px;
   }
 
-  .column-heading,
-  .question-composer,
-  .queue-panel,
   .discussion-panel {
-    padding-inline: 16px;
+    flex: 1 1 auto;
+    padding: 14px 14px calc(12px + env(safe-area-inset-bottom));
+    overflow: hidden;
+  }
+
+  .question-queue,
+  .discussion-list {
+    overscroll-behavior: contain;
   }
 
   .settlement-main,
@@ -3670,6 +3800,66 @@ svg {
   .chip-grid--three,
   .chip-grid--four {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-header,
+  .app-header--compact {
+    padding-inline: 10px;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 27px;
+  }
+
+  .room-code-chip {
+    max-width: 112px;
+    padding-inline: 9px;
+  }
+
+  .room-code-chip > span {
+    display: none;
+  }
+
+  .text-button--danger {
+    padding-inline: 6px;
+    font-size: 11px;
+  }
+
+  .modal-backdrop {
+    align-items: flex-end;
+    padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom));
+  }
+
+  .modal-card,
+  .modal-card--wide {
+    width: 100%;
+    max-height: calc(100dvh - max(20px, env(safe-area-inset-top)));
+    border-radius: 22px 22px 14px 14px;
+  }
+
+  .segmented,
+  .chip-grid--three,
+  .chip-grid--four {
+    gap: 7px;
+  }
+
+  .modal-actions,
+  .confirm-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .modal-actions > *,
+  .confirm-actions > * {
+    width: 100%;
+    min-height: 46px;
+  }
+
+  .modal-actions .ghost-button {
+    margin-right: 0;
   }
 }
 
@@ -3856,4 +4046,14 @@ textarea {
 .toggle-row small {
   font-size: 11px;
   font-weight: 600;
+}
+
+@media (max-width: 800px) {
+  /* Sixteen-pixel form text prevents focus zoom on iOS Safari. */
+  .composer-box textarea,
+  .discussion-composer input,
+  .field input,
+  .conclusion-form textarea {
+    font-size: 16px;
+  }
 }

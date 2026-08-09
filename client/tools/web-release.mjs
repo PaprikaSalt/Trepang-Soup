@@ -69,8 +69,6 @@ async function loadBuildContract() {
   const serverVersion = serverProject.match(/^version = "([^"]+)"/m)?.[1];
   const declaredVersions = {
     compatibility: compatibility.clientVersion,
-    server: serverVersion,
-    serverRuntime: serverInit.match(/APP_VERSION = "([^"]+)"/)?.[1],
     tauri: tauriConfig.version,
     cargo: cargoManifest.match(/^version = "([^"]+)"/m)?.[1],
     clientRuntime: clientProtocol.match(/CLIENT_VERSION = "([^"]+)"/)?.[1],
@@ -78,6 +76,25 @@ async function loadBuildContract() {
   for (const [source, version] of Object.entries(declaredVersions)) {
     if (version !== packageJson.version) {
       throw new Error(`${source} 版本 ${version ?? "缺失"} 与客户端版本 ${packageJson.version} 不一致`);
+    }
+  }
+
+  // UI-only client releases may continue to use an explicitly supported API version.
+  const supportedApiVersions = compatibility.supportedApiVersions;
+  if (
+    !Array.isArray(supportedApiVersions) ||
+    supportedApiVersions.length === 0 ||
+    supportedApiVersions.some((version) => !/^\d+\.\d+\.\d+$/.test(version))
+  ) {
+    throw new Error("supportedApiVersions 必须包含至少一个正式 SemVer");
+  }
+  const serverVersions = {
+    project: serverVersion,
+    runtime: serverInit.match(/APP_VERSION = "([^"]+)"/)?.[1],
+  };
+  for (const [source, version] of Object.entries(serverVersions)) {
+    if (!version || !supportedApiVersions.includes(version)) {
+      throw new Error(`服务端 ${source} 版本 ${version ?? "缺失"} 不在客户端兼容范围内`);
     }
   }
 
@@ -148,6 +165,7 @@ async function prepare() {
     version: packageJson.version,
     sourceCommit: readSourceCommit(),
     apiBase: publicEnvironment.VITE_SERVER_URL,
+    supportedApiVersions: compatibility.supportedApiVersions,
     protocolVersion: compatibility.protocolVersion,
     publicBase: compatibility.web.publicBase,
     buildMode: compatibility.web.buildMode,
@@ -164,6 +182,12 @@ async function verify() {
   const actualFiles = (await listFiles(distDir)).filter((file) => file !== "integration.json");
 
   if (integration.version !== packageJson.version) throw new Error("清单版本与客户端版本不一致");
+  if (
+    JSON.stringify(integration.supportedApiVersions) !==
+    JSON.stringify(compatibility.supportedApiVersions)
+  ) {
+    throw new Error("清单 API 兼容版本与发布契约不一致");
+  }
   if (integration.protocolVersion !== compatibility.protocolVersion) throw new Error("清单协议版本不一致");
   if (integration.publicBase !== compatibility.web.publicBase) throw new Error("清单公共路径不一致");
   if (integration.adminEnabled !== false) throw new Error("公开 Web 清单必须禁用管理员入口");
