@@ -17,7 +17,7 @@ Trepang Soup 面向少量好友，提供 Windows 原生桌面客户端和可嵌�
 
 ## 当前基线
 
-- 客户端：`1.5.0`，Windows 10/11 x64 与浏览器，Tauri 2 + Vue 3 + TypeScript。
+- 客户端：`1.5.1`，Windows 10/11 x64 与浏览器，Tauri 2 + Vue 3 + TypeScript。
 - 服务端：`1.5.0`，Ubuntu 24.04 x86-64，FastAPI + WebSocket + SQLite。
 - 通信协议：`1`。
 - 公网入口由部署环境配置；HTTPS 与 WSS 使用同一 API 域名。
@@ -154,9 +154,9 @@ pnpm run verify:web
 API 地址、协议版本、公共路径及全部运行时文件的 SHA-256。浏览器端使用 hash 路由，因此
 博客应通过 `/apps/trepang-soup/index.html#/` 访问，不依赖服务器 SPA fallback。
 
-当前兼容契约记录在 `release-compatibility.json`：客户端与 API 均为 `1.5.0`，协议版本
-为 `1`。仅 UI 或文案变更无需提高协议版本；HTTP 或 WebSocket 出现不兼容变更时必须同步
-提升协议版本并更新兼容契约。
+当前兼容契约记录在 `release-compatibility.json`：客户端为 `1.5.1`，兼容 API `1.5.0`，
+协议版本为 `1`。仅 UI 或文案变更无需升级服务端或提高协议版本；HTTP 或 WebSocket 出现
+不兼容变更时必须同步提升协议版本并更新兼容契约。
 
 ## 接口与协议速查
 
@@ -271,8 +271,8 @@ pnpm tauri build
 
 ```powershell
 .\tools\create_updater_manifest.ps1 `
-  -Version "1.5.0" `
-  -InstallerPath "release\Trepang Soup 1.5.0 x64 Setup.exe" `
+  -Version "1.5.1" `
+  -InstallerPath "release\Trepang Soup 1.5.1 x64 Setup.exe" `
   -Notes "本次更新摘要" `
   -OutputPath "release\latest.json"
 ```

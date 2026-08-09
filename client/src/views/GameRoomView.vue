@@ -8,6 +8,8 @@ import PlayerAvatar from "../components/PlayerAvatar.vue";
 import { useGameStore } from "../stores/game";
 import type { Question, TimelineItem } from "../types/game";
 
+type MobileGamePane = "story" | "host" | "social";
+
 const router = useRouter();
 const game = useGameStore();
 const discussionDraft = ref("");
@@ -23,6 +25,8 @@ const conclusionFeedback = ref("");
 const pendingDetailCount = ref(0);
 const pendingDetailPenalty = ref(0);
 const feed = ref<HTMLElement | null>(null);
+// Mobile players switch between the three desktop columns without losing drafts or scroll state.
+const mobileGamePane = ref<MobileGamePane>("story");
 
 onMounted(async () => {
   try {
@@ -99,9 +103,17 @@ async function askForHint(): Promise<void> {
   hintLoading.value = true;
   try {
     await game.requestHint();
+    await selectMobilePane("host");
   } finally {
     hintLoading.value = false;
   }
+}
+
+async function selectMobilePane(pane: MobileGamePane): Promise<void> {
+  mobileGamePane.value = pane;
+  if (pane !== "host") return;
+  await nextTick();
+  feed.value?.scrollTo({ top: feed.value.scrollHeight, behavior: "smooth" });
 }
 
 async function submitConclusion(acceptDetailPenalty = false): Promise<void> {
@@ -174,8 +186,38 @@ function timelineKey(item: TimelineItem): string {
       </template>
     </AppHeader>
 
-    <main class="game-layout">
-      <aside class="game-sidebar game-sidebar--left">
+    <nav class="mobile-game-tabs" aria-label="游戏区域">
+      <button
+        type="button"
+        :class="{ 'mobile-game-tabs__button--active': mobileGamePane === 'story' }"
+        :aria-pressed="mobileGamePane === 'story'"
+        @click="selectMobilePane('story')"
+      >
+        <span>汤面</span>
+        <small>{{ game.onlineCount }} 人</small>
+      </button>
+      <button
+        type="button"
+        :class="{ 'mobile-game-tabs__button--active': mobileGamePane === 'host' }"
+        :aria-pressed="mobileGamePane === 'host'"
+        @click="selectMobilePane('host')"
+      >
+        <span>主持人</span>
+        <small>{{ game.pendingQuestions.length ? `${game.pendingQuestions.length} 待答` : '问答' }}</small>
+      </button>
+      <button
+        type="button"
+        :class="{ 'mobile-game-tabs__button--active': mobileGamePane === 'social' }"
+        :aria-pressed="mobileGamePane === 'social'"
+        @click="selectMobilePane('social')"
+      >
+        <span>聊天室</span>
+        <small>{{ game.discussions.length ? `${game.discussions.length} 条` : '讨论' }}</small>
+      </button>
+    </nav>
+
+    <main class="game-layout" :class="`game-layout--mobile-${mobileGamePane}`">
+      <aside id="mobile-story-pane" class="game-sidebar game-sidebar--left">
         <section class="puzzle-panel">
           <div class="section-label">
             <span>汤面</span>
@@ -214,7 +256,7 @@ function timelineKey(item: TimelineItem): string {
         </button>
       </aside>
 
-      <section class="host-column">
+      <section id="mobile-host-pane" class="host-column">
         <header class="column-heading">
           <div>
             <span class="host-orb"><i></i></span>
@@ -305,7 +347,7 @@ function timelineKey(item: TimelineItem): string {
         </form>
       </section>
 
-      <aside class="game-sidebar game-sidebar--right">
+      <aside id="mobile-social-pane" class="game-sidebar game-sidebar--right">
         <section class="queue-panel">
           <div class="section-label section-label--queue">
             <span>待回答</span>
