@@ -1,0 +1,10 @@
+{
+  "clientVersion": "1.5.0",
+  "supportedApiVersions": ["1.5.0"],
+  "protocolVersion": 1,
+  "web": {
+    "publicBase": "/apps/trepang-soup/",
+    "buildMode": "web.production",
+    "adminEnabled": false
+  }
+}

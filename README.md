@@ -4,20 +4,21 @@
 
 <h1 align="center">Trepang Soup</h1>
 
-<p align="center"><strong>海龟汤 · 多人在线 AI 主持人桌面游戏</strong></p>
+<p align="center"><strong>海龟汤 · 多人在线 AI 主持人游戏</strong></p>
 
 <p align="center">
   无需注册，叫上朋友、输入邀请码，就能开始一场由 DeepSeek 主持的海龟汤。
 </p>
 
-Trepang Soup 面向少量好友，提供 Windows 原生桌面客户端、实时多人房间、AI 或私人
-题库，以及从提问到结算、续局的完整流程。本文件是仓库唯一维护文档；历史版本变化以
-Git 历史及 [GitHub Releases](https://github.com/PaprikaSalt/Trepang-Soup/releases) 为准。
+Trepang Soup 面向少量好友，提供 Windows 原生桌面客户端和可嵌入博客的 Web 客户端、
+实时多人房间、AI 或私人题库，以及从提问到结算、续局的完整流程。本文件是仓库唯一维护
+文档；历史版本变化以 Git 历史及
+[GitHub Releases](https://github.com/PaprikaSalt/Trepang-Soup/releases) 为准。
 
 ## 当前基线
 
-- 客户端：`1.4.0`，Windows 10/11 x64，Tauri 2 + Vue 3 + TypeScript。
-- 服务端：`1.4.0`，Ubuntu 24.04 x86-64，FastAPI + WebSocket + SQLite。
+- 客户端：`1.5.0`，Windows 10/11 x64 与浏览器，Tauri 2 + Vue 3 + TypeScript。
+- 服务端：`1.5.0`，Ubuntu 24.04 x86-64，FastAPI + WebSocket + SQLite。
 - 通信协议：`1`。
 - 公网入口由部署环境配置；HTTPS 与 WSS 使用同一 API 域名。
 - 规模边界：好友房间，最多 20 人；服务端必须保持单 worker。
@@ -54,10 +55,10 @@ Git 历史及 [GitHub Releases](https://github.com/PaprikaSalt/Trepang-Soup/rele
 ## 仓库结构
 
 ```text
-client/                    Windows 桌面客户端
+client/                    Windows 与 Web 共用的 Vue 客户端
   src/                     Vue 页面、状态、协议与传输
   src-tauri/               Tauri/Rust 配置及 Windows 打包
-  tools/                   客户端回归冒烟脚本
+  tools/                   客户端回归与 Web 产物校验脚本
 server/                    FastAPI 服务端
   app/api/                 HTTP 与 WebSocket 入口
   app/ai/                  DeepSeek 适配、提示词及安全映射
@@ -67,6 +68,9 @@ server/                    FastAPI 服务端
   tools/                   凭据、传输和真实 DeepSeek 冒烟脚本
 tools/create_updater_manifest.ps1
                            生成 GitHub 在线更新清单
+.github/workflows/release-web.yml
+                           按 tag 构建并发布版本化 Web 产物
+release-compatibility.json 客户端、API 与协议兼容契约
 ```
 
 ## 本地开发
@@ -132,6 +136,27 @@ VITE_SERVER_URL=http://127.0.0.1:8787
 
 正式构建的服务地址由构建环境配置。仅查看界面时可将 `VITE_TRANSPORT_MODE` 改为
 `mock`。
+
+### Web 客户端
+
+公开 Web 包使用仓库内的 `.env.web.production`，固定部署到博客子路径，并在构建阶段
+移除管理员按钮、`/library` 路由和对应代码块：
+
+```bash
+cd client
+pnpm install --frozen-lockfile
+pnpm run build:web
+pnpm run verify:web
+```
+
+输出目录为 `client/dist`，根目录包含 `index.html`、`app-icon.svg`、
+`integration.json` 和带内容哈希的 `assets/`。`integration.json` 记录版本、完整源提交、
+API 地址、协议版本、公共路径及全部运行时文件的 SHA-256。浏览器端使用 hash 路由，因此
+博客应通过 `/apps/trepang-soup/index.html#/` 访问，不依赖服务器 SPA fallback。
+
+当前兼容契约记录在 `release-compatibility.json`：客户端与 API 均为 `1.5.0`，协议版本
+为 `1`。仅 UI 或文案变更无需提高协议版本；HTTP 或 WebSocket 出现不兼容变更时必须同步
+提升协议版本并更新兼容契约。
 
 ## 接口与协议速查
 
@@ -207,6 +232,8 @@ python tools/smoke_deepseek.py
 cd client
 pnpm smoke:updater
 pnpm build
+pnpm run build:web
+pnpm run verify:web
 cargo fmt --manifest-path src-tauri\Cargo.toml --check
 ```
 
@@ -244,8 +271,8 @@ pnpm tauri build
 
 ```powershell
 .\tools\create_updater_manifest.ps1 `
-  -Version "1.4.0" `
-  -InstallerPath "release\Trepang Soup 1.4.0 x64 Setup.exe" `
+  -Version "1.5.0" `
+  -InstallerPath "release\Trepang Soup 1.5.0 x64 Setup.exe" `
   -Notes "本次更新摘要" `
   -OutputPath "release\latest.json"
 ```
@@ -254,6 +281,20 @@ pnpm tauri build
 `latest.json`。发布后从 GitHub 重新下载三项资产并比对 SHA-256，同时确认
 `https://github.com/PaprikaSalt/Trepang-Soup/releases/latest/download/latest.json` 返回当前版本。
 签名私钥和密码只保存在仓库外，不得提交。
+
+## Web 发布
+
+推送 `vX.Y.Z` tag 会触发 `.github/workflows/release-web.yml`。流水线使用锁定依赖执行类型
+检查和 Web 构建，校验版本、公共资源路径、管理员隔离、文件完整性与秘密文件，再生成：
+
+```text
+trepang-soup-web-vX.Y.Z.zip
+trepang-soup-web-vX.Y.Z.sha256
+```
+
+若 tag 尚无 Release，流水线先创建草稿 Release，避免在 Windows 更新资产尚未上传时影响
+桌面端更新。Web ZIP、SHA-256、Windows 安装包、签名和 `latest.json` 全部就绪后，再填写
+更新说明并发布 Release。手动运行工作流只上传 Actions Artifact，不修改正式 Release。
 
 ## 当前已知约束
 

@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 1 as const;
-export const CLIENT_VERSION = "1.4.0";
+export const CLIENT_VERSION = "1.5.0";
 
 export type ProtocolDifficulty = "beginner" | "standard" | "hard";
 export type ProtocolPuzzleStyle =

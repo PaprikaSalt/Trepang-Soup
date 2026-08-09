@@ -1,0 +1,75 @@
+name: Release Web client
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22.13.0"
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and verify public Web package
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          pnpm run build:web
+          pnpm run verify:web
+
+      - name: Package versioned Web assets
+        id: package
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          ARCHIVE="trepang-soup-web-v${VERSION}.zip"
+          (cd dist && zip -qr "../${ARCHIVE}" .)
+          sha256sum "${ARCHIVE}" > "trepang-soup-web-v${VERSION}.sha256"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+          echo "checksum=trepang-soup-web-v${VERSION}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload manual-run artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: trepang-soup-web-v${{ steps.package.outputs.version }}
+          path: |
+            client/${{ steps.package.outputs.archive }}
+            client/${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+
+      - name: Attach assets to the tagged GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --draft
+          gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" "$CHECKSUM"

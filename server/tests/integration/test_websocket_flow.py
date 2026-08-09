@@ -179,7 +179,7 @@ async def test_websocket_single_player_rematch_restarts_same_room() -> None:
                 token=token,
                 command_id="cmd_hello_rematch",
                 command_type="session.hello",
-                payload={"lastEventId": 0, "clientVersion": "1.4.0"},
+                payload={"lastEventId": 0, "clientVersion": "1.5.0"},
             ),
             wire_command(
                 room_id=room_id,
@@ -212,7 +212,7 @@ async def test_websocket_single_player_rematch_restarts_same_room() -> None:
                 token=token,
                 command_id="cmd_hello_vote",
                 command_type="session.hello",
-                payload={"lastEventId": room.event_sequence, "clientVersion": "1.4.0"},
+                payload={"lastEventId": room.event_sequence, "clientVersion": "1.5.0"},
             ),
             wire_command(
                 room_id=room_id,

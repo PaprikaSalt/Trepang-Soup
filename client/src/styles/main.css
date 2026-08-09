@@ -3443,6 +3443,236 @@ svg {
   }
 }
 
+/* The Web package also runs inside a narrow blog iframe and mobile browsers. */
+@media (max-width: 800px) {
+  html,
+  body,
+  #app {
+    height: auto;
+    min-height: 100%;
+  }
+
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .app-shell,
+  .page {
+    height: auto;
+    min-height: 100dvh;
+  }
+
+  .app-shell {
+    overflow-x: hidden;
+    overflow-y: visible;
+  }
+
+  .app-header,
+  .app-header--compact {
+    position: sticky;
+    top: 0;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    min-height: 62px;
+    padding-inline: 14px;
+  }
+
+  .brand-copy {
+    display: none;
+  }
+
+  .room-code-chip {
+    max-width: 150px;
+    justify-self: center;
+    overflow: hidden;
+  }
+
+  .header-actions {
+    gap: 7px;
+  }
+
+  .text-button {
+    font-size: 12px;
+  }
+
+  .home-main--minimal {
+    min-height: calc(100dvh - 62px);
+    padding: 22px 14px;
+  }
+
+  .home-entry {
+    padding: 22px 18px;
+    border-radius: 20px;
+  }
+
+  .room-actions,
+  .home-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .room-action-card {
+    min-height: 88px;
+    padding: 17px;
+  }
+
+  .home-status {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .lobby-main {
+    display: flex;
+    width: min(100% - 28px, 620px);
+    flex-direction: column;
+    align-items: stretch;
+    gap: 28px;
+    margin: 0 auto;
+    padding: 34px 0 44px;
+  }
+
+  .lobby-copy h1 {
+    font-size: clamp(35px, 11vw, 48px);
+  }
+
+  .lobby-panel {
+    padding: 22px 18px;
+    border-radius: 20px;
+  }
+
+  .player-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .page--game {
+    overflow-y: auto;
+  }
+
+  .game-layout {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+  }
+
+  .game-sidebar--left,
+  .game-sidebar--right {
+    border: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .game-sidebar--left {
+    min-height: 420px;
+  }
+
+  .host-column {
+    min-height: 760px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .game-sidebar--right {
+    min-height: 720px;
+  }
+
+  .puzzle-panel,
+  .members-panel {
+    padding-inline: 18px;
+  }
+
+  .column-heading,
+  .question-composer,
+  .queue-panel,
+  .discussion-panel {
+    padding-inline: 16px;
+  }
+
+  .settlement-main,
+  .subpage-main {
+    width: min(100% - 28px, 620px);
+    padding-block: 34px 46px;
+  }
+
+  .settlement-hero {
+    min-height: 0;
+    padding-right: 0;
+    padding-bottom: 24px;
+  }
+
+  .settlement-hero h1 {
+    padding-right: 108px;
+    font-size: clamp(34px, 10vw, 46px);
+  }
+
+  .score-seal {
+    top: 0;
+    right: 0;
+    width: 96px;
+    height: 96px;
+  }
+
+  .score-seal span {
+    font-size: 38px;
+  }
+
+  .score-seal small {
+    margin-top: 7px;
+  }
+
+  .settlement-meta,
+  .settlement-actions,
+  .rematch-panel__heading,
+  .panel-heading,
+  .awards-heading,
+  .subpage-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settlement-meta {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .award-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .awards-heading > p {
+    text-align: left;
+  }
+
+  .rematch-voters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settlement-actions > *,
+  .library-heading-actions > * {
+    width: 100%;
+  }
+
+  .history-card {
+    grid-template-columns: 52px minmax(0, 1fr) 18px;
+    gap: 12px;
+    padding: 15px;
+  }
+
+  .history-card__meta {
+    display: none;
+  }
+
+  .modal-card,
+  .modal-card--wide {
+    width: min(100% - 24px, 760px);
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+  }
+
+  .segmented,
+  .chip-grid--three,
+  .chip-grid--four {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

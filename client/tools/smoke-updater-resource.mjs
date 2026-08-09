@@ -15,7 +15,7 @@ globalThis.window = {
 const update = new Update({
   rid: 73,
   currentVersion: "1.2.0",
-  version: "1.4.0",
+  version: "1.5.0",
   rawJson: {},
 });
 

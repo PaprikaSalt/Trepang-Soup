@@ -1,11 +1,14 @@
 {
   "name": "trepang-soup",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
+  "packageManager": "pnpm@10.15.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "build:web": "vue-tsc --noEmit && vite build --mode web.production && node tools/web-release.mjs prepare",
+    "verify:web": "node tools/web-release.mjs verify",
     "preview": "vite preview",
     "smoke:updater": "node tools/smoke-updater-resource.mjs",
     "tauri": "tauri"

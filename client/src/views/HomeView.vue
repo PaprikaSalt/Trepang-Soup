@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { defineAsyncComponent, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import AppHeader from "../components/AppHeader.vue";
 import CreateRoomDialog from "../components/CreateRoomDialog.vue";
 import JoinRoomDialog from "../components/JoinRoomDialog.vue";
+import { adminEnabled } from "../config/features";
 import { useGameStore } from "../stores/game";
 import type { RoomConfig, RoomStage } from "../types/game";
 
@@ -15,6 +16,10 @@ const joinOpen = ref(false);
 const creating = ref(false);
 const joining = ref(false);
 const admissionError = ref("");
+// Keeping this UI in a lazy chunk lets Rollup remove it completely from public Web builds.
+const AdminHomeTool = adminEnabled
+  ? defineAsyncComponent(() => import("../components/AdminHomeTool.vue"))
+  : null;
 onMounted(() => {
   void game.checkServer();
 });
@@ -124,17 +129,7 @@ function openJoinDialog(): void {
             </span>
           </button>
 
-          <button type="button" @click="router.push('/library')">
-            <span class="home-tool-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M6 5.5h10.5A1.5 1.5 0 0 1 18 7v12H7.5A1.5 1.5 0 0 1 6 17.5v-12Z" />
-                <path d="M6 17.5A1.5 1.5 0 0 1 7.5 16H18M6 5.5H4.8A.8.8 0 0 0 4 6.3v12.2" />
-              </svg>
-            </span>
-            <span>
-              <strong>题库管理</strong>
-            </span>
-          </button>
+          <AdminHomeTool v-if="AdminHomeTool" />
         </div>
 
         <div class="home-status" :class="{ 'home-status--error': game.connectionStatus === 'error' }">
